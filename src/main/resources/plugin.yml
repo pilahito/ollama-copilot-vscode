@@ -1,0 +1,11 @@
+name: CustomCommand
+version: 1.0
+main: com.example.customcommand.CustomCommand
+commands:
+  hola:
+    description: Muestra un saludo personalizado
+    usage: /<command>
+permissions:
+  customcommand.hola:
+    description: Permiso para usar el comando /hola
+    default: op

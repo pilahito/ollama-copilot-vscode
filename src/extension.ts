@@ -94,9 +94,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
 
-    // Abre el panel lateral de chat.
+    // Abre el panel de chat en la barra lateral.
     vscode.commands.registerCommand('local.openChat', () => {
-      vscode.commands.executeCommand('workbench.view.extension.local-sidebar');
+      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
     }),
 
     // Comprueba la conexión manualmente y muestra una notificación con el resultado.

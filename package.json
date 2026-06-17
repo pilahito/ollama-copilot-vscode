@@ -41,8 +41,9 @@
     "commands": [
       {
         "command": "local.openChat",
-        "title": "Local: Abrir Chat",
-        "icon": "$(comment-discussion)"
+        "title": "Local: Abrir Chat IA",
+        "icon": "$(hubot)",
+        "category": "Local Copilot"
       },
       {
         "command": "local.fixError",
@@ -94,6 +95,12 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "local.openChat",
+          "group": "navigation@1"
+        }
+      ],
       "editor/context": [
         {
           "command": "local.fixError",
@@ -124,18 +131,19 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "local-sidebar",
-          "title": "Local",
+          "id": "localcopilot",
+          "title": "Local Copilot",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "local-sidebar": [
+      "localcopilot": [
         {
           "type": "webview",
           "id": "local.chatView",
-          "name": "Chat Local"
+          "name": "Chat IA",
+          "icon": "media/icon.svg"
         }
       ]
     },
@@ -144,16 +152,17 @@
       "properties": {
         "local.provider": {
           "type": "string",
-          "enum": ["ollama", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
+          "enum": ["ollama", "duckduckgo", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
           "enumDescriptions": [
             "Ollama - IA local (gratis, sin internet)",
+            "DuckDuckGo AI - GRATIS sin API key (usa GPT-4o-mini)",
             "Gemini - Google AI (gratis con límites)",
             "OpenRouter - Múltiples modelos (de pago)",
-            "Groq - Ultra rápido (gratis)",
-            "Cohere - Command R (gratis)",
-            "Together AI - Llama 3 gratis",
-            "Cerebras - Velocidad récord (gratis)",
-            "HuggingFace - Modelos open source (gratis)"
+            "Groq - Ultra rápido (gratis con API key)",
+            "Cohere - Command R (gratis con API key)",
+            "Together AI - Llama 3 (gratis con API key)",
+            "Cerebras - Velocidad récord (gratis con API key)",
+            "HuggingFace - Modelos open source (gratis con API key)"
           ],
           "default": "ollama",
           "description": "Proveedor de IA para el chat y reparación de código."

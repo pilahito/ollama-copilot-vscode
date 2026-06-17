@@ -39,7 +39,7 @@ export interface OllamaChatMessage {
   content: string;
 }
 
-export type ProviderName = 'ollama' | 'gemini' | 'openrouter' | 'groq' | 'cohere' | 'together' | 'cerebras' | 'huggingface';
+export type ProviderName = 'ollama' | 'duckduckgo' | 'gemini' | 'openrouter' | 'groq' | 'cohere' | 'together' | 'cerebras' | 'huggingface';
 
 /**
  * Cliente para comunicarse con el servidor Ollama local y proveedores de IA gratuitos.
@@ -134,6 +134,16 @@ export class OllamaClient {
     this.refreshConfig();
 
     if (this.useInternet) {
+      // DuckDuckGo AI - GRATIS sin API key
+      if (this.provider === 'duckduckgo') {
+        this.connected = true;
+        return {
+          ok: true,
+          models: ['gpt-4o-mini', 'claude-3-haiku', 'llama-3.3-70b', 'mixtral-8x7b'],
+          provider: 'duckduckgo'
+        };
+      }
+
       if (this.provider === 'gemini') {
         if (!this.geminiApiKey) {
           this.connected = false;
@@ -275,6 +285,10 @@ export class OllamaClient {
     this.refreshConfig();
     const useModel = model ?? this.getConfig('completionModel', 'codellama:13b');
 
+    if (this.useInternet && this.provider === 'duckduckgo') {
+      return await this.fetchDuckDuckGoChat([{ role: 'user', content: prompt }]);
+    }
+
     if (this.useInternet && this.provider === 'gemini') {
       const response = await this.fetchGeminiChat(
         [{ role: 'user', content: prompt }],
@@ -350,6 +364,12 @@ export class OllamaClient {
   ): Promise<string> {
     this.refreshConfig();
     const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
+
+    if (this.useInternet && this.provider === 'duckduckgo') {
+      const response = await this.fetchDuckDuckGoChat(messages);
+      this.emitChunks(response, onToken);
+      return response;
+    }
 
     if (this.useInternet && this.provider === 'gemini') {
       const response = await this.fetchGeminiChat(messages, useModel);
@@ -527,6 +547,72 @@ export class OllamaClient {
     };
     const text = data.choices?.[0]?.message?.content ?? '';
     return text.trim();
+  }
+
+  // ── DuckDuckGo AI (GRATIS, sin API key) ───────────────────────────────────────
+
+  private async fetchDuckDuckGoChat(messages: OllamaChatMessage[]): Promise<string> {
+    try {
+      // Paso 1: Obtener el token VQD
+      const statusResponse = await fetch('https://duckduckgo.com/duckchat/v1/status', {
+        headers: {
+          'x-vqd-accept': '1',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      
+      const vqd = statusResponse.headers.get('x-vqd-4');
+      if (!vqd) {
+        throw new Error('No se pudo obtener token de DuckDuckGo');
+      }
+
+      // Paso 2: Enviar el mensaje
+      const chatMessages = messages.map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: m.content
+      }));
+
+      const response = await fetch('https://duckduckgo.com/duckchat/v1/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-vqd-4': vqd,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: chatMessages
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`DuckDuckGo error: ${response.status}`);
+      }
+
+      // Paso 3: Procesar la respuesta streaming
+      const text = await response.text();
+      const lines = text.split('\n');
+      let result = '';
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') break;
+          try {
+            const json = JSON.parse(data);
+            if (json.message) {
+              result += json.message;
+            }
+          } catch {
+            // Ignorar líneas que no son JSON válido
+          }
+        }
+      }
+      
+      return result.trim() || 'No se recibió respuesta de DuckDuckGo AI.';
+    } catch (error) {
+      throw new Error(`Error DuckDuckGo: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   // ── Groq (gratis, muy rápido) ────────────────────────────────────────────────
