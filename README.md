@@ -1,4 +1,4 @@
-# Ollama Copilot VSCode (Ayitax Copilot)
+# Ollama Copilot VSCode (local Copilot)
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-007ACC.svg)
