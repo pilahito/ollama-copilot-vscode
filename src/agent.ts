@@ -308,20 +308,22 @@ export class LocalAgent {
       return true;
     }
 
-    const summary = result.actions
-      .map((action) => `${action.type === 'create' ? '🆕' : action.type === 'delete' ? '🗑️' : '✏️'} ${action.filePath}`)
-      .join('\n');
+    const confirmMessage = '¿Permitir que el agente aplique los cambios propuestos al proyecto?';
 
     onProgress('⏸️ Esperando confirmación del usuario...');
 
-    const choice = await vscode.window.showWarningMessage(
-      `El agente quiere realizar ${result.actions.length} cambio(s) en tu proyecto.\n\n${summary}`,
-      { modal: true },
-      'Permitir',
-      'Cancelar'
-    );
-
-    return choice === 'Permitir';
+    try {
+      const choice = await vscode.window.showWarningMessage(
+        confirmMessage,
+        { modal: true },
+        'Aceptar',
+        'Cancelar'
+      );
+      return choice === 'Aceptar';
+    } catch {
+      onProgress('⚠ La confirmación fue cancelada o no pudo abrirse correctamente; los cambios no se aplicarán.');
+      return false;
+    }
   }
 
   // ── Aplicación de acciones ────────────────────────────────────────────────────

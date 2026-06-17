@@ -76,6 +76,7 @@ export class OllamaClient {
    * sin que el usuario tenga que configurar nada más.
    */
   async checkConnection(): Promise<OllamaConnectionResult> {
+    this.refreshConfig();
     try {
       const data   = await this.httpGet('/api/tags');
       const parsed = JSON.parse(data);
@@ -102,6 +103,7 @@ export class OllamaClient {
    * @param model   Modelo a usar (usa `completionModel` de config si se omite).
    */
   async generateCompletion(prompt: string, model?: string): Promise<string> {
+    this.refreshConfig();
     const useModel = model ?? this.getConfig('completionModel', 'codellama:13b');
     const body = JSON.stringify({
       model:   useModel,
@@ -138,6 +140,7 @@ export class OllamaClient {
     onToken:  (token: string) => void,
     model?:   string
   ): Promise<string> {
+    this.refreshConfig();
     const useModel    = model ?? this.getConfig('chatModel', 'mistral:7b');
     let   fullResponse = '';
 

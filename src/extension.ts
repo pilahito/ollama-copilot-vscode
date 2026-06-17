@@ -65,6 +65,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const interval = setInterval(refreshStatusBar, POLLING_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
 
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('local')) {
+        ollama.refreshConfig();
+        void refreshStatusBar();
+      }
+    })
+  );
+
   // ── Vista de chat lateral ───────────────────────────────────────────────────
 
   const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama);
