@@ -1,0 +1,146 @@
+{
+  "name": "local-copilot",
+  "displayName": "Local Copilot — IA Local",
+  "description": "Copilot de código gratuito que usa tus IAs locales (Ollama) para autocompletado, chat y reparación autónoma de código.",
+  "version": "1.0.0",
+  "publisher": "pilahito",
+  "author": {
+    "name": "pilahito",
+    "url": "https://github.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pilahito/ollama-copilot-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pilahito/ollama-copilot-vscode/issues"
+  },
+  "homepage": "https://github.com/pilahito/ollama-copilot-vscode#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Machine Learning", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "local.openChat",
+        "title": "Local: Abrir Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "local.fixError",
+        "title": "Local: Arreglar este código"
+      },
+      {
+        "command": "local.explainCode",
+        "title": "Local: Explicar este código"
+      },
+      {
+        "command": "local.checkConnection",
+        "title": "Local: Comprobar conexión con Ollama"
+      },
+      {
+        "command": "local.toggleInlineSuggestions",
+        "title": "Local: Activar/Desactivar autocompletado"
+      },
+      {
+        "command": "local.analyzeProject",
+        "title": "Local: Analizar todo el proyecto"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "local.fixError",
+          "group": "local@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "local.explainCode",
+          "group": "local@2",
+          "when": "editorHasSelection"
+        }
+      ],
+      "commandPalette": [
+        { "command": "local.openChat" },
+        { "command": "local.fixError", "when": "editorHasSelection" },
+        { "command": "local.explainCode", "when": "editorHasSelection" },
+        { "command": "local.checkConnection" },
+        { "command": "local.toggleInlineSuggestions" },
+        { "command": "local.analyzeProject" }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "local-sidebar",
+          "title": "Local",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "local-sidebar": [
+        {
+          "type": "webview",
+          "id": "local.chatView",
+          "name": "Chat Local"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Local Copilot",
+      "properties": {
+        "local.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL del servidor Ollama local."
+        },
+        "local.chatModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Modelo Ollama usado para el chat y reparación de código."
+        },
+        "local.completionModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Modelo Ollama usado para el autocompletado inline."
+        },
+        "local.inlineSuggestionsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Activa el autocompletado inline tipo Copilot."
+        },
+        "local.completionDelay": {
+          "type": "number",
+          "default": 400,
+          "description": "Milisegundos de espera tras dejar de escribir antes de sugerir (debounce)."
+        },
+        "local.requireConfirmation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Si está activado, el modo agente pide confirmación antes de escribir archivos. Si está desactivado, aplica cambios automáticamente."
+        },
+        "local.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "(Opcional) API Key de Gemini, solo informativo — esta extensión usa Ollama local exclusivamente."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

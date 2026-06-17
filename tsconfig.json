@@ -1,0 +1,21 @@
+/**
+ * Ayitax Copilot — IA Local para VS Code
+ * (c) 2026 pilahito
+ * Licensed under the MIT License.
+ */
+
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "outDir": "out",
+    "sourceMap": true,
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "node"
+  },
+  "exclude": ["node_modules", ".vscode-test", "dist"]
+}
