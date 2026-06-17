@@ -29,7 +29,9 @@ import { LocalAgent, FileAction } from './agent';
 
 type WebviewInMessage =
   | { type: 'send'; text: string; mode: 'chat' | 'agent' }
-  | { type: 'checkConnection' };
+  | { type: 'checkConnection' }
+  | { type: 'setProvider'; provider: string }
+  | { type: 'setInternetMode'; useInternet: boolean };
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -70,6 +72,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       if (message.type === 'send') {
         await this.handleUserMessage(message.text, message.mode);
       } else if (message.type === 'checkConnection') {
+        const status = await this.ollama.checkConnection();
+        this.post({ type: 'connectionStatus', ...status });
+      } else if (message.type === 'setProvider') {
+        await vscode.workspace.getConfiguration('local').update(
+          'provider',
+          message.provider,
+          vscode.ConfigurationTarget.Global
+        );
+        this.ollama.refreshConfig();
+        const status = await this.ollama.checkConnection();
+        this.post({ type: 'connectionStatus', ...status });
+      } else if (message.type === 'setInternetMode') {
+        await vscode.workspace.getConfiguration('local').update(
+          'useInternet',
+          message.useInternet,
+          vscode.ConfigurationTarget.Global
+        );
+        this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
         this.post({ type: 'connectionStatus', ...status });
       }
@@ -139,10 +159,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   private async handleChatMode(text: string): Promise<void> {
     const status = await this.ollama.checkConnection();
     if (!status.ok) {
+      const providerName = status.provider === 'gemini'
+        ? 'Gemini'
+        : status.provider === 'openrouter'
+          ? 'OpenRouter'
+          : 'Ollama';
       this.post({
         type: 'response',
-        text: '⚠ No se detecta Ollama corriendo en local. Ejecuta `ollama serve` y vuelve a intentarlo.',
-        done: true
+        text: `⚠ No se pudo usar ${providerName}. ${status.message ?? 'Revisa la configuración y vuelve a intentarlo.'}`,
       });
       return;
     }
@@ -192,6 +216,29 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
   .dot.ok   { background: #3fb950; }
   .dot.fail { background: #f85149; }
+  #provider-select {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  #internet-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    margin-left: auto;
+  }
+  #internet-toggle select {
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
 
   #mode-bar {
     display: flex; gap: 4px; padding: 6px 8px;
@@ -249,7 +296,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <body>
   <div id="status-bar">
     <span class="dot" id="status-dot"></span>
-    <span id="status-text">Comprobando Ollama...</span>
+    <span id="status-text">Comprobando proveedor...</span>
+    <div id="internet-toggle">
+      <span>Internet:</span>
+      <select id="internet-mode">
+        <option value="false">No</option>
+        <option value="true">Sí</option>
+      </select>
+    </div>
+    <select id="provider-select">
+      <option value="ollama">🏠 Ollama (local)</option>
+      <option value="groq">🚀 Groq (gratis)</option>
+      <option value="cerebras">⚡ Cerebras (gratis)</option>
+      <option value="gemini">💎 Gemini (gratis)</option>
+      <option value="together">🤝 Together (gratis)</option>
+      <option value="cohere">🔷 Cohere (gratis)</option>
+      <option value="huggingface">🤗 HuggingFace (gratis)</option>
+      <option value="openrouter">🔀 OpenRouter</option>
+    </select>
   </div>
   <div id="mode-bar">
     <button class="mode-btn active" id="mode-chat"  onclick="setMode('chat')">💬 Chat</button>
@@ -266,6 +330,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   const vscode      = acquireVsCodeApi();
   const messagesEl  = document.getElementById('messages');
   const promptEl    = document.getElementById('prompt');
+  const providerEl  = document.getElementById('provider-select');
+  const internetEl  = document.getElementById('internet-mode');
   let   mode        = 'chat';
   let   currentAiEl = null;
 
@@ -295,6 +361,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     vscode.postMessage({ type: 'send', text, mode });
   }
 
+  providerEl.addEventListener('change', () => {
+    vscode.postMessage({ type: 'setProvider', provider: providerEl.value });
+  });
+  internetEl.addEventListener('change', () => {
+    vscode.postMessage({ type: 'setInternetMode', useInternet: internetEl.value === 'true' });
+  });
+
   document.getElementById('send').addEventListener('click', send);
   promptEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -305,10 +378,21 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       case 'connectionStatus': {
         const dot = document.getElementById('status-dot');
         const txt = document.getElementById('status-text');
+        const provider = msg.provider || 'ollama';
+        const useInternet = msg.useInternet === true;
+        providerEl.value = provider;
+        internetEl.value = String(useInternet);
         dot.className  = 'dot ' + (msg.ok ? 'ok' : 'fail');
-        txt.textContent = msg.ok
-          ? 'Ollama conectado (' + (msg.models?.[0] ?? '—') + ')'
-          : 'Ollama desconectado';
+        if (msg.ok) {
+          const label = provider === 'gemini'
+            ? 'Gemini'
+            : provider === 'openrouter'
+              ? 'OpenRouter'
+              : 'Ollama';
+          txt.textContent = label + ' conectado (' + (msg.models?.[0] ?? '—') + ')';
+        } else {
+          txt.textContent = 'Proveedor no disponible';
+        }
         break;
       }
       case 'progress':     addMessage('progress', msg.text); break;

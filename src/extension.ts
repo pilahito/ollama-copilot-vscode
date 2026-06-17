@@ -25,6 +25,7 @@ import * as vscode from 'vscode';
 import { OllamaClient }                    from './ollamaClient';
 import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
 import { LocalChatViewProvider }          from './chatViewProvider';
+import { GitHubService }                   from './githubService';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 
 export function activate(context: vscode.ExtensionContext): void {
   const ollama        = new OllamaClient();
+  const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
 
   // ── Status bar ──────────────────────────────────────────────────────────────
@@ -158,6 +160,92 @@ export function activate(context: vscode.ExtensionContext): void {
         'Analiza la estructura general de este proyecto y dime qué mejorarías o si detectas algún problema.',
         'agent'
       );
+    }),
+
+    // Abre una terminal automática local/SSH para ejecutar comandos.
+    vscode.commands.registerCommand('local.openAutoTerminal', async () => {
+      const config = vscode.workspace.getConfiguration('local');
+      const enabled = config.get<boolean>('enableAutomation', false);
+      if (!enabled) {
+        vscode.window.showWarningMessage(
+          'Activa local.enableAutomation y configura tu SSH para usar la terminal automática.'
+        );
+        return;
+      }
+
+      const sshUser = config.get<string>('sshUser', '');
+      const sshHost = config.get<string>('sshHost', '');
+      const sshPort = config.get<number>('sshPort', 22);
+      const sshCommand = config.get<string>('sshCommand', 'ssh');
+      const terminalName = config.get<string>('autoTerminalName', 'Local Auto');
+
+      if (!sshHost) {
+        vscode.window.showWarningMessage(
+          'Configura local.sshHost para poder abrir una terminal automática.'
+        );
+        return;
+      }
+
+      const terminal = vscode.window.createTerminal({
+        name: terminalName,
+        cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      });
+
+      terminal.show(true);
+      const userPart = sshUser ? `${sshUser}@` : '';
+      const portPart = sshPort && sshPort !== 22 ? ` -p ${sshPort}` : '';
+      terminal.sendText(`${sshCommand} ${userPart}${sshHost}${portPart}`, true);
+    }),
+
+    // ── Comandos de GitHub ──────────────────────────────────────────────────────
+
+    // Conectar con GitHub
+    vscode.commands.registerCommand('local.githubLogin', async () => {
+      await github.login();
+    }),
+
+    // Desconectar de GitHub
+    vscode.commands.registerCommand('local.githubLogout', async () => {
+      await github.logout();
+    }),
+
+    // Publicar proyecto en GitHub
+    vscode.commands.registerCommand('local.githubPublish', async () => {
+      await github.publishProject();
+    }),
+
+    // Clonar repositorio de GitHub
+    vscode.commands.registerCommand('local.githubClone', async () => {
+      await github.cloneRepo();
+    }),
+
+    // Ver mis repositorios
+    vscode.commands.registerCommand('local.githubRepos', async () => {
+      const session = await github.getSession();
+      if (!session) {
+        const login = await github.login();
+        if (!login) { return; }
+      }
+
+      const repos = await github.listRepos();
+      if (!repos.length) {
+        vscode.window.showInformationMessage('No tienes repositorios en GitHub.');
+        return;
+      }
+
+      const selected = await vscode.window.showQuickPick(
+        repos.map((r) => ({
+          label: r.private ? `🔒 ${r.name}` : `🌍 ${r.name}`,
+          description: r.description ?? '',
+          detail: r.html_url,
+          repo: r
+        })),
+        { placeHolder: 'Tus repositorios de GitHub' }
+      );
+
+      if (selected) {
+        vscode.env.openExternal(vscode.Uri.parse(selected.repo.html_url));
+      }
     })
 
   );
