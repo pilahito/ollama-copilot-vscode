@@ -214,10 +214,7 @@ MIT License © 2026 [DavidPilahito7](https://github.com/pilahito)
   <strong>⭐ Si te gusta, dale una estrella en GitHub ⭐</strong>
 </p>
 
-<p align="center">
-  Hecho con ❤️ en Conil de la Frontera, Andalucía 🇪🇸
-</p>
-
+<p align="center
 ```
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║   🐙 GitHub: github.com/pilahito/ollama-copilot-vscode                       ║
