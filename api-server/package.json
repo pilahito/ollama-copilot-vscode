@@ -1,0 +1,18 @@
+{
+  "name": "ollama-api-server",
+  "version": "1.0.0",
+  "description": "Servidor API REST para conectar Acode y apps móviles con Ollama local",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["ollama", "api", "acode", "rest", "mobile"],
+  "author": "DavidPilahito7",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
+  }
+}

@@ -1,0 +1,1535 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Copilot Chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #21262d;
+      --border: #30363d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --accent: #8b5cf6;
+      --accent-hover: #7c3aed;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #8b5cf6, #3b82f6);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .header-title {
+      flex: 1;
+    }
+
+    .header-title h1 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .header-title span {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .header-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.offline { background: var(--danger); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    select, input, button {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    select:focus, input:focus {
+      border-color: var(--accent);
+    }
+
+    /* Main container */
+    .main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 260px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-header h3 {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .btn-new {
+      background: var(--accent);
+      border: none;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .btn-new:hover { background: var(--accent-hover); }
+
+    .conversations {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .conversation-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: background 0.2s;
+    }
+
+    .conversation-item:hover { background: var(--bg-tertiary); }
+    .conversation-item.active { background: var(--bg-tertiary); border: 1px solid var(--border); }
+
+    .conversation-item h4 {
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .conversation-item span {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* Chat area */
+    .chat-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-header {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .mode-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-tertiary);
+      padding: 4px;
+      border-radius: 8px;
+    }
+
+    .mode-tab {
+      padding: 8px 16px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    .mode-tab:hover { color: var(--text-primary); }
+    .mode-tab.active { 
+      background: var(--accent); 
+      color: white; 
+    }
+
+    .chat-options {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .toggle-internet {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: var(--bg-tertiary);
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .toggle-internet.active {
+      background: rgba(59, 130, 246, 0.2);
+      color: #60a5fa;
+    }
+
+    /* Messages */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .message {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .message.user .message-avatar {
+      background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    }
+
+    .message.assistant .message-avatar {
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+    }
+
+    .message-content {
+      flex: 1;
+      max-width: 800px;
+    }
+
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .message-author {
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .message-time {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .message-text {
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .message-text code {
+      background: var(--bg-tertiary);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Fira Code', monospace;
+      font-size: 13px;
+    }
+
+    .message-text pre {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 12px 0;
+      overflow-x: auto;
+    }
+
+    .message-text pre code {
+      background: none;
+      padding: 0;
+    }
+
+    .code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      border-radius: 8px 8px 0 0;
+      margin-bottom: -1px;
+    }
+
+    .code-lang {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .btn-copy {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .btn-copy:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+    /* Typing indicator */
+    .typing {
+      display: flex;
+      gap: 4px;
+      padding: 8px;
+    }
+
+    .typing span {
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: typing 1.4s infinite;
+    }
+
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes typing {
+      0%, 100% { transform: translateY(0); opacity: 0.4; }
+      50% { transform: translateY(-4px); opacity: 1; }
+    }
+
+    /* Input area */
+    .input-area {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+
+    .input-container {
+      display: flex;
+      gap: 12px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      transition: border-color 0.2s;
+    }
+
+    .input-container:focus-within {
+      border-color: var(--accent);
+    }
+
+    .input-container textarea {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.5;
+      resize: none;
+      outline: none;
+      min-height: 24px;
+      max-height: 200px;
+    }
+
+    .input-container textarea::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .input-actions {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .btn-attach, .btn-send {
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.2s;
+    }
+
+    .btn-attach {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    .btn-attach:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+    .btn-send {
+      background: var(--accent);
+      color: white;
+    }
+
+    .btn-send:hover { background: var(--accent-hover); transform: scale(1.05); }
+    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .input-hint {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* Welcome screen */
+    .welcome {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 40px;
+    }
+
+    .welcome-icon {
+      font-size: 64px;
+      margin-bottom: 24px;
+    }
+
+    .welcome h2 {
+      font-size: 24px;
+      margin-bottom: 12px;
+    }
+
+    .welcome p {
+      color: var(--text-secondary);
+      max-width: 400px;
+      line-height: 1.6;
+    }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 32px;
+      justify-content: center;
+    }
+
+    .suggestion {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+      max-width: 200px;
+      text-align: left;
+    }
+
+    .suggestion:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    .suggestion-icon {
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .suggestion h4 {
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .suggestion p {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* Settings modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-overlay.show { display: flex; }
+
+    .modal {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 500px;
+      max-width: 90vw;
+      max-height: 80vh;
+      overflow: hidden;
+    }
+
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .modal-header h3 { font-size: 16px; }
+
+    .btn-close {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 20px;
+      padding: 4px;
+    }
+
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: var(--text-secondary);
+    }
+
+    .form-group input, .form-group select {
+      width: 100%;
+    }
+
+    .modal-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      padding: 10px 20px;
+      cursor: pointer;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .header-title span { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div class="logo">🤖</div>
+  <div class="header-title">
+    <h1>Local Copilot</h1>
+    <span>Tu asistente de código con IA local</span>
+  </div>
+  <div class="header-controls">
+    <div class="status-dot" id="statusDot"></div>
+    <select id="modelSelect">
+      <option value="llama3.2">llama3.2</option>
+    </select>
+    <button onclick="showHardwareRecommendations()" title="Recomendaciones de IA" style="background: linear-gradient(135deg, #8b5cf6, #3b82f6);">🎯</button>
+    <button onclick="openSettings()" title="Configuración">⚙️</button>
+  </div>
+</header>
+
+<!-- Main -->
+<main class="main">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h3>Conversaciones</h3>
+      <button class="btn-new" onclick="newConversation()">+ Nueva</button>
+    </div>
+    <div class="conversations" id="conversationsList"></div>
+  </aside>
+
+  <!-- Chat -->
+  <div class="chat-container">
+    <div class="chat-header">
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="chat" onclick="setMode('chat')">💬 Chat</button>
+        <button class="mode-tab" data-mode="agent" onclick="setMode('agent')">🤖 Agente</button>
+      </div>
+      <div class="chat-options">
+        <div class="toggle-internet" id="toggleInternet" onclick="toggleInternet()">
+          🌐 <span>Internet</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="messages" id="messages">
+      <!-- Welcome -->
+      <div class="welcome" id="welcome">
+        <div class="welcome-icon">🚀</div>
+        <h2>¡Hola! Soy Local Copilot</h2>
+        <p>Tu asistente de código potenciado por IA local. Pregúntame lo que quieras sobre programación.</p>
+        <div class="suggestions">
+          <div class="suggestion" onclick="useSuggestion('Explica cómo funciona async/await en JavaScript')">
+            <div class="suggestion-icon">📚</div>
+            <h4>Explicar código</h4>
+            <p>Aprende conceptos de programación</p>
+          </div>
+          <div class="suggestion" onclick="useSuggestion('Crea una función para validar emails en Python')">
+            <div class="suggestion-icon">✨</div>
+            <h4>Generar código</h4>
+            <p>Crea funciones y componentes</p>
+          </div>
+          <div class="suggestion" onclick="useSuggestion('Ayúdame a arreglar este error: TypeError undefined')">
+            <div class="suggestion-icon">🔧</div>
+            <h4>Arreglar errores</h4>
+            <p>Debugea y corrige problemas</p>
+          </div>
+          <div class="suggestion" onclick="useSuggestion('Refactoriza este código para que sea más eficiente')">
+            <div class="suggestion-icon">⚡</div>
+            <h4>Refactorizar</h4>
+            <p>Mejora y optimiza código</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+      <div class="input-container">
+        <textarea id="promptInput" placeholder="Pregunta algo sobre código..." rows="1" onkeydown="handleKeyDown(event)"></textarea>
+        <div class="input-actions">
+          <button class="btn-attach" title="Adjuntar archivo">📎</button>
+          <button class="btn-send" id="sendBtn" onclick="sendMessage()">➤</button>
+        </div>
+      </div>
+      <div class="input-hint">
+        <span id="modeHint">💬 Chat: Responde preguntas sin modificar archivos</span>
+        <span>Enter para enviar · Shift+Enter nueva línea</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Hardware Recommendations Modal -->
+<div class="modal-overlay" id="hardwareModal">
+  <div class="modal" style="width: 600px;">
+    <div class="modal-header">
+      <h3>🔧 Tu Hardware y Recomendaciones</h3>
+      <button class="btn-close" onclick="closeHardwareModal()">×</button>
+    </div>
+    <div class="modal-body" id="hardwareInfo" style="max-height: 70vh;">
+      <div style="text-align: center; padding: 40px;">
+        <div class="typing"><span></span><span></span><span></span></div>
+        <p style="margin-top: 16px; color: var(--text-secondary);">Detectando hardware...</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>⚙️ Configuración</h3>
+      <button class="btn-close" onclick="closeSettings()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>URL del servidor Ollama</label>
+        <input type="text" id="ollamaUrl" value="http://localhost:11434">
+      </div>
+      <div class="form-group">
+        <label>API Key (opcional)</label>
+        <input type="password" id="apiKey" placeholder="Deja vacío si no usas autenticación">
+      </div>
+      <div class="form-group">
+        <label>Modelo por defecto</label>
+        <input type="text" id="defaultModel" value="llama3.2">
+      </div>
+      <div class="form-group">
+        <label>Temperatura (creatividad)</label>
+        <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7">
+        <span id="tempValue">0.7</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeSettings()">Cancelar</button>
+      <button class="btn-primary" onclick="saveSettings()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Detección de Hardware ────────────────────────────────────────────────────
+
+const HardwareDetector = {
+  async detect() {
+    const info = {
+      platform: this.detectPlatform(),
+      ram: await this.detectRAM(),
+      cores: navigator.hardwareConcurrency || 4,
+      gpu: await this.detectGPU(),
+      isAndroid: /Android/i.test(navigator.userAgent),
+      isIOS: /iPhone|iPad|iPod/i.test(navigator.userAgent),
+      isMobile: /Mobile|Android|iPhone/i.test(navigator.userAgent),
+      browser: this.detectBrowser()
+    };
+    
+    info.category = this.categorize(info);
+    info.recommendations = this.getRecommendations(info);
+    
+    return info;
+  },
+  
+  detectPlatform() {
+    const ua = navigator.userAgent;
+    if (/Android/i.test(ua)) return 'android';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+    if (/Windows/i.test(ua)) return 'windows';
+    if (/Mac/i.test(ua)) return 'macos';
+    if (/Linux/i.test(ua)) return 'linux';
+    return 'unknown';
+  },
+  
+  async detectRAM() {
+    // navigator.deviceMemory está disponible en algunos navegadores
+    if (navigator.deviceMemory) {
+      return navigator.deviceMemory;
+    }
+    // Estimación basada en plataforma
+    if (/Android/i.test(navigator.userAgent)) return 4;
+    if (/iPhone|iPad/i.test(navigator.userAgent)) return 6;
+    return 8; // Asumir 8GB para PC
+  },
+  
+  async detectGPU() {
+    try {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+        if (debugInfo) {
+          const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+          return {
+            name: renderer,
+            isNvidia: /nvidia/i.test(renderer),
+            isAMD: /amd|radeon/i.test(renderer),
+            isIntel: /intel/i.test(renderer),
+            isApple: /apple|m1|m2|m3/i.test(renderer),
+            isMobile: /adreno|mali|powervr/i.test(renderer)
+          };
+        }
+      }
+    } catch {}
+    return { name: 'Unknown', isNvidia: false, isAMD: false, isIntel: false };
+  },
+  
+  detectBrowser() {
+    const ua = navigator.userAgent;
+    if (/Acode/i.test(ua)) return 'acode';
+    if (/Chrome/i.test(ua)) return 'chrome';
+    if (/Firefox/i.test(ua)) return 'firefox';
+    if (/Safari/i.test(ua)) return 'safari';
+    return 'unknown';
+  },
+  
+  categorize(info) {
+    // Android / iOS - siempre conectar a servidor remoto
+    if (info.isMobile) {
+      if (info.ram >= 8) return 'mobile-high';
+      if (info.ram >= 6) return 'mobile-medium';
+      return 'mobile-low';
+    }
+    
+    // PC con GPU dedicada
+    if (info.gpu.isNvidia || info.gpu.isAMD) {
+      if (info.ram >= 32) return 'ultra';
+      if (info.ram >= 16) return 'high';
+      return 'medium';
+    }
+    
+    // PC sin GPU dedicada
+    if (info.ram >= 16) return 'high';
+    if (info.ram >= 8) return 'medium';
+    return 'low';
+  },
+  
+  getRecommendations(info) {
+    const recs = {
+      // ══════════════════════════════════════════════════════════════════════
+      // 📱 ANDROID / MÓVIL
+      // ══════════════════════════════════════════════════════════════════════
+      'mobile-low': {
+        title: '📱 Android/iOS Básico',
+        description: `${info.ram}GB RAM - Conectar a servidor remoto`,
+        canRunLocal: false,
+        suggestion: 'Tu dispositivo no puede ejecutar IA local. Conéctate a tu PC o servidor.',
+        serverModels: ['tinyllama:1.1b', 'phi3:mini', 'gemma:2b'],
+        androidApps: [
+          { name: 'Acode + Este servidor', desc: 'Conecta Acode a tu PC con Ollama', recommended: true },
+          { name: 'Termux + Ollama', desc: 'Solo para móviles muy potentes (12GB+ RAM)', link: 'https://github.com/ollama/ollama' }
+        ],
+        tips: [
+          '💡 Configura este servidor en tu PC y conéctate desde el móvil',
+          '💡 Usa WiFi local para menor latencia',
+          '💡 Los modelos pequeños (1-3B) responden más rápido'
+        ]
+      },
+      'mobile-medium': {
+        title: '📱 Android/iOS Medio',
+        description: `${info.ram}GB RAM - Algunas opciones locales`,
+        canRunLocal: true,
+        localModels: [
+          { name: 'MLC LLM', desc: 'IA local optimizada para móvil', size: '1-4GB', link: 'https://mlc.ai/' },
+          { name: 'Llama.cpp Android', desc: 'Modelos GGUF en Android', size: '2-8GB' }
+        ],
+        serverModels: ['llama3.2:3b', 'mistral:7b', 'codellama:7b'],
+        tips: [
+          '💡 Prueba MLC LLM para IA local en Android',
+          '💡 Para mejor experiencia, conecta a tu servidor PC',
+          '💡 Modelos 3B funcionan bien en 6GB+ RAM'
+        ]
+      },
+      'mobile-high': {
+        title: '📱 Android/iOS Potente',
+        description: `${info.ram}GB RAM - Puede ejecutar IA local`,
+        canRunLocal: true,
+        localModels: [
+          { name: 'MLC LLM (Llama 3B)', desc: 'Funciona bien en 8GB+', size: '2GB', recommended: true },
+          { name: 'Termux + Ollama', desc: 'Experiencia completa de Ollama', size: '4-8GB' }
+        ],
+        serverModels: ['llama3.2:3b', 'mistral:7b', 'phi3:medium'],
+        tips: [
+          '💡 ¡Tu móvil puede ejecutar IA local!',
+          '💡 Instala Termux y Ollama para experiencia completa',
+          '💡 Usa modelos 3B-7B para buen equilibrio'
+        ]
+      },
+      
+      // ══════════════════════════════════════════════════════════════════════
+      // 💻 PC
+      // ══════════════════════════════════════════════════════════════════════
+      'low': {
+        title: '💻 PC Básico',
+        description: `${info.ram}GB RAM, ${info.cores} núcleos - GPU: ${info.gpu.name}`,
+        canRunLocal: true,
+        localModels: [
+          { name: 'tinyllama:1.1b', size: '637MB', ram: '2GB', speed: '⚡⚡⚡⚡⚡', quality: '⭐⭐' },
+          { name: 'phi3:mini', size: '2.2GB', ram: '4GB', speed: '⚡⚡⚡⚡', quality: '⭐⭐⭐', recommended: true },
+          { name: 'gemma:2b', size: '1.7GB', ram: '4GB', speed: '⚡⚡⚡⚡', quality: '⭐⭐⭐' },
+          { name: 'qwen2:1.5b', size: '934MB', ram: '3GB', speed: '⚡⚡⚡⚡⚡', quality: '⭐⭐⭐' }
+        ],
+        install: 'curl -fsSL https://ollama.com/install.sh | sh',
+        tips: [
+          '💡 Usa modelos cuantizados (q4_0) para ahorrar memoria',
+          '💡 Cierra Chrome y otras apps pesadas',
+          '💡 phi3:mini es tu mejor opción'
+        ]
+      },
+      'medium': {
+        title: '💻 PC Medio',
+        description: `${info.ram}GB RAM, ${info.cores} núcleos - GPU: ${info.gpu.name}`,
+        canRunLocal: true,
+        localModels: [
+          { name: 'llama3.2:3b', size: '2.0GB', ram: '6GB', speed: '⚡⚡⚡⚡', quality: '⭐⭐⭐⭐', recommended: true },
+          { name: 'mistral:7b', size: '4.1GB', ram: '8GB', speed: '⚡⚡⚡', quality: '⭐⭐⭐⭐', recommended: true },
+          { name: 'codellama:7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', quality: '⭐⭐⭐⭐' },
+          { name: 'deepseek-coder:6.7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', quality: '⭐⭐⭐⭐' },
+          { name: 'gemma:7b', size: '5.0GB', ram: '10GB', speed: '⚡⚡⚡', quality: '⭐⭐⭐⭐' }
+        ],
+        install: 'curl -fsSL https://ollama.com/install.sh | sh && ollama pull mistral:7b',
+        tips: [
+          '💡 mistral:7b es excelente equilibrio calidad/velocidad',
+          '💡 Para código usa codellama:7b o deepseek-coder',
+          '💡 Puedes usar varios modelos según la tarea'
+        ]
+      },
+      'high': {
+        title: '💻 PC Potente',
+        description: `${info.ram}GB RAM, ${info.cores} núcleos - GPU: ${info.gpu.name}`,
+        canRunLocal: true,
+        hasGPU: info.gpu.isNvidia || info.gpu.isAMD,
+        localModels: [
+          { name: 'llama3.1:8b', size: '4.7GB', ram: '10GB', speed: '⚡⚡⚡', quality: '⭐⭐⭐⭐⭐', recommended: true },
+          { name: 'codellama:13b', size: '7.4GB', ram: '16GB', speed: '⚡⚡', quality: '⭐⭐⭐⭐⭐' },
+          { name: 'mixtral:8x7b', size: '26GB', ram: '32GB', speed: '⚡⚡', quality: '⭐⭐⭐⭐⭐' },
+          { name: 'deepseek-coder:33b', size: '19GB', ram: '24GB', speed: '⚡', quality: '⭐⭐⭐⭐⭐' },
+          { name: 'phi3:medium', size: '7.9GB', ram: '12GB', speed: '⚡⚡', quality: '⭐⭐⭐⭐⭐' }
+        ],
+        install: 'curl -fsSL https://ollama.com/install.sh | sh && ollama pull llama3.1:8b',
+        tips: [
+          '💡 ¡Tu PC puede ejecutar modelos potentes!',
+          '💡 llama3.1:8b tiene calidad cercana a GPT-3.5',
+          info.gpu.isNvidia ? '💡 Tu GPU NVIDIA acelerará mucho la generación' : '💡 Considera una GPU NVIDIA para más velocidad'
+        ]
+      },
+      'ultra': {
+        title: '🖥️ Workstation / Servidor',
+        description: `${info.ram}GB RAM, ${info.cores} núcleos - GPU: ${info.gpu.name}`,
+        canRunLocal: true,
+        hasGPU: true,
+        localModels: [
+          { name: 'llama3.1:70b', size: '40GB', ram: '48GB', speed: '⚡', quality: '⭐⭐⭐⭐⭐', recommended: true },
+          { name: 'qwen2:72b', size: '41GB', ram: '48GB', speed: '⚡', quality: '⭐⭐⭐⭐⭐' },
+          { name: 'codellama:70b', size: '40GB', ram: '48GB', speed: '⚡', quality: '⭐⭐⭐⭐⭐' },
+          { name: 'mixtral:8x22b', size: '80GB', ram: '96GB', speed: '⚡', quality: '⭐⭐⭐⭐⭐' }
+        ],
+        install: 'curl -fsSL https://ollama.com/install.sh | sh && ollama pull llama3.1:70b',
+        tips: [
+          '🚀 ¡Tu máquina puede ejecutar los mejores modelos!',
+          '💡 llama3.1:70b rivaliza con GPT-4',
+          '💡 Puedes servir IA a múltiples dispositivos'
+        ]
+      }
+    };
+    
+    return recs[info.category] || recs['medium'];
+  }
+};
+
+// ── Estado de la aplicación ──────────────────────────────────────────────────
+
+const state = {
+  conversations: [],
+  currentConversation: null,
+  messages: [],
+  mode: 'chat',
+  internetEnabled: false,
+  config: {
+    serverUrl: window.location.origin,
+    apiKey: '',
+    model: 'llama3.2',
+    temperature: 0.7
+  }
+};
+
+// ── Inicialización ───────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadConfig();
+  checkConnection();
+  loadConversations();
+  
+  // Auto-resize textarea
+  const textarea = document.getElementById('promptInput');
+  textarea.addEventListener('input', () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+  });
+
+  // Temperature slider
+  const tempSlider = document.getElementById('temperature');
+  tempSlider.addEventListener('input', () => {
+    document.getElementById('tempValue').textContent = tempSlider.value;
+  });
+});
+
+// ── Conexión ─────────────────────────────────────────────────────────────────
+
+async function checkConnection() {
+  try {
+    const res = await fetch(`${state.config.serverUrl}/health`);
+    const data = await res.json();
+    
+    const dot = document.getElementById('statusDot');
+    if (data.ollama?.connected) {
+      dot.classList.remove('offline');
+      loadModels();
+    } else {
+      dot.classList.add('offline');
+    }
+  } catch {
+    document.getElementById('statusDot').classList.add('offline');
+  }
+}
+
+async function loadModels() {
+  try {
+    const headers = {};
+    if (state.config.apiKey) {
+      headers['Authorization'] = `Bearer ${state.config.apiKey}`;
+    }
+    
+    const res = await fetch(`${state.config.serverUrl}/models`, { headers });
+    const data = await res.json();
+    
+    const select = document.getElementById('modelSelect');
+    select.innerHTML = '';
+    
+    for (const model of data.models || []) {
+      const option = document.createElement('option');
+      option.value = model.name;
+      option.textContent = model.name;
+      if (model.name === state.config.model) option.selected = true;
+      select.appendChild(option);
+    }
+  } catch (e) {
+    console.error('Error cargando modelos:', e);
+  }
+}
+
+// ── Conversaciones ───────────────────────────────────────────────────────────
+
+function loadConversations() {
+  const saved = localStorage.getItem('conversations');
+  if (saved) {
+    state.conversations = JSON.parse(saved);
+  }
+  renderConversations();
+}
+
+function saveConversations() {
+  localStorage.setItem('conversations', JSON.stringify(state.conversations));
+}
+
+function renderConversations() {
+  const list = document.getElementById('conversationsList');
+  list.innerHTML = '';
+  
+  for (const conv of state.conversations) {
+    const item = document.createElement('div');
+    item.className = 'conversation-item' + (conv.id === state.currentConversation?.id ? ' active' : '');
+    item.onclick = () => loadConversation(conv.id);
+    item.innerHTML = `
+      <h4>${conv.title || 'Nueva conversación'}</h4>
+      <span>${new Date(conv.updatedAt).toLocaleDateString()}</span>
+    `;
+    list.appendChild(item);
+  }
+}
+
+function newConversation() {
+  const conv = {
+    id: Date.now().toString(),
+    title: 'Nueva conversación',
+    messages: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  
+  state.conversations.unshift(conv);
+  state.currentConversation = conv;
+  state.messages = [];
+  
+  saveConversations();
+  renderConversations();
+  renderMessages();
+  
+  document.getElementById('welcome').style.display = 'flex';
+}
+
+function loadConversation(id) {
+  const conv = state.conversations.find(c => c.id === id);
+  if (!conv) return;
+  
+  state.currentConversation = conv;
+  state.messages = conv.messages || [];
+  
+  renderConversations();
+  renderMessages();
+}
+
+// ── Mensajes ─────────────────────────────────────────────────────────────────
+
+function renderMessages() {
+  const container = document.getElementById('messages');
+  const welcome = document.getElementById('welcome');
+  
+  if (state.messages.length === 0) {
+    welcome.style.display = 'flex';
+    return;
+  }
+  
+  welcome.style.display = 'none';
+  
+  let html = '';
+  for (const msg of state.messages) {
+    html += renderMessage(msg);
+  }
+  
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+function renderMessage(msg) {
+  const isUser = msg.role === 'user';
+  const avatar = isUser ? '👤' : '🤖';
+  const author = isUser ? 'Tú' : 'Local Copilot';
+  const time = new Date(msg.timestamp || Date.now()).toLocaleTimeString();
+  
+  // Formatear contenido con código
+  let content = escapeHtml(msg.content);
+  content = formatCode(content);
+  
+  return `
+    <div class="message ${msg.role}">
+      <div class="message-avatar">${avatar}</div>
+      <div class="message-content">
+        <div class="message-header">
+          <span class="message-author">${author}</span>
+          <span class="message-time">${time}</span>
+        </div>
+        <div class="message-text">${content}</div>
+      </div>
+    </div>
+  `;
+}
+
+function formatCode(text) {
+  // Bloques de código
+  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<div class="code-header"><span class="code-lang">${lang || 'código'}</span><button class="btn-copy" onclick="copyCode(this)">📋 Copiar</button></div><pre><code>${code.trim()}</code></pre>`;
+  });
+  
+  // Código inline
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+  
+  // Negrita
+  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  
+  return text;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function copyCode(btn) {
+  const code = btn.parentElement.nextElementSibling.textContent;
+  navigator.clipboard.writeText(code);
+  btn.textContent = '✓ Copiado';
+  setTimeout(() => btn.textContent = '📋 Copiar', 2000);
+}
+
+// ── Enviar mensaje ───────────────────────────────────────────────────────────
+
+async function sendMessage() {
+  const input = document.getElementById('promptInput');
+  const text = input.value.trim();
+  
+  if (!text) return;
+  
+  // Crear conversación si no existe
+  if (!state.currentConversation) {
+    newConversation();
+  }
+  
+  // Ocultar welcome
+  document.getElementById('welcome').style.display = 'none';
+  
+  // Añadir mensaje del usuario
+  const userMsg = { role: 'user', content: text, timestamp: new Date().toISOString() };
+  state.messages.push(userMsg);
+  state.currentConversation.messages = state.messages;
+  state.currentConversation.title = text.slice(0, 50);
+  state.currentConversation.updatedAt = new Date().toISOString();
+  
+  saveConversations();
+  renderConversations();
+  renderMessages();
+  
+  // Limpiar input
+  input.value = '';
+  input.style.height = 'auto';
+  
+  // Mostrar typing
+  addTypingIndicator();
+  
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (state.config.apiKey) {
+      headers['Authorization'] = `Bearer ${state.config.apiKey}`;
+    }
+    
+    const model = document.getElementById('modelSelect').value;
+    const endpoint = state.mode === 'agent' ? '/agent' : (state.internetEnabled ? '/search' : '/chat');
+    
+    const body = state.mode === 'agent' || state.internetEnabled
+      ? { query: text, model, prompt: text }
+      : {
+          messages: state.messages.map(m => ({ role: m.role, content: m.content })),
+          model,
+          temperature: state.config.temperature
+        };
+    
+    const res = await fetch(`${state.config.serverUrl}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+    
+    const data = await res.json();
+    
+    // Quitar typing
+    removeTypingIndicator();
+    
+    // Añadir respuesta
+    let responseText = '';
+    if (state.internetEnabled && data.webResults) {
+      responseText = data.answer || data.message?.content || 'Sin respuesta';
+    } else if (data.message) {
+      responseText = data.message.content;
+    } else if (data.explanation) {
+      responseText = data.explanation;
+      if (data.actions?.length) {
+        responseText += '\n\n**Archivos modificados:**\n';
+        for (const action of data.actions) {
+          responseText += `- ${action.type}: ${action.filePath}\n`;
+        }
+      }
+    } else {
+      responseText = data.error || 'Error desconocido';
+    }
+    
+    const assistantMsg = { role: 'assistant', content: responseText, timestamp: new Date().toISOString() };
+    state.messages.push(assistantMsg);
+    state.currentConversation.messages = state.messages;
+    
+    saveConversations();
+    renderMessages();
+    
+  } catch (e) {
+    removeTypingIndicator();
+    const errorMsg = { role: 'assistant', content: `❌ Error: ${e.message}`, timestamp: new Date().toISOString() };
+    state.messages.push(errorMsg);
+    renderMessages();
+  }
+}
+
+function addTypingIndicator() {
+  const container = document.getElementById('messages');
+  const typing = document.createElement('div');
+  typing.id = 'typingIndicator';
+  typing.className = 'message assistant';
+  typing.innerHTML = `
+    <div class="message-avatar">🤖</div>
+    <div class="message-content">
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>
+  `;
+  container.appendChild(typing);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  const typing = document.getElementById('typingIndicator');
+  if (typing) typing.remove();
+}
+
+function handleKeyDown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function useSuggestion(text) {
+  document.getElementById('promptInput').value = text;
+  sendMessage();
+}
+
+// ── Modo y opciones ──────────────────────────────────────────────────────────
+
+function setMode(mode) {
+  state.mode = mode;
+  
+  document.querySelectorAll('.mode-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.mode === mode);
+  });
+  
+  const hint = document.getElementById('modeHint');
+  if (mode === 'chat') {
+    hint.textContent = '💬 Chat: Responde preguntas sin modificar archivos';
+  } else {
+    hint.textContent = '🤖 Agente: Analiza tu proyecto y puede modificar archivos';
+  }
+}
+
+function toggleInternet() {
+  state.internetEnabled = !state.internetEnabled;
+  document.getElementById('toggleInternet').classList.toggle('active', state.internetEnabled);
+}
+
+// ── Configuración ────────────────────────────────────────────────────────────
+
+function loadConfig() {
+  const saved = localStorage.getItem('localCopilotConfig');
+  if (saved) {
+    state.config = { ...state.config, ...JSON.parse(saved) };
+  }
+  
+  document.getElementById('ollamaUrl').value = state.config.serverUrl;
+  document.getElementById('apiKey').value = state.config.apiKey || '';
+  document.getElementById('defaultModel').value = state.config.model;
+  document.getElementById('temperature').value = state.config.temperature;
+  document.getElementById('tempValue').textContent = state.config.temperature;
+}
+
+function saveConfig() {
+  localStorage.setItem('localCopilotConfig', JSON.stringify(state.config));
+}
+
+function openSettings() {
+  document.getElementById('settingsModal').classList.add('show');
+}
+
+function closeSettings() {
+  document.getElementById('settingsModal').classList.remove('show');
+}
+
+function saveSettings() {
+  state.config.serverUrl = document.getElementById('ollamaUrl').value;
+  state.config.apiKey = document.getElementById('apiKey').value;
+  state.config.model = document.getElementById('defaultModel').value;
+  state.config.temperature = parseFloat(document.getElementById('temperature').value);
+  
+  saveConfig();
+  closeSettings();
+  checkConnection();
+}
+
+// ── Recomendaciones de Hardware ──────────────────────────────────────────────
+
+async function showHardwareRecommendations() {
+  document.getElementById('hardwareModal').classList.add('show');
+  
+  const container = document.getElementById('hardwareInfo');
+  
+  try {
+    const hardware = await HardwareDetector.detect();
+    const rec = hardware.recommendations;
+    
+    let modelsHtml = '';
+    if (rec.localModels) {
+      modelsHtml = rec.localModels.map(m => `
+        <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 12px; margin-bottom: 8px; ${m.recommended ? 'border: 1px solid var(--accent);' : ''}">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <strong>${m.name}</strong>
+            ${m.recommended ? '<span style="background: var(--accent); color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px;">RECOMENDADO</span>' : ''}
+          </div>
+          <div style="display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--text-secondary);">
+            <span>📦 ${m.size}</span>
+            <span>🧠 ${m.ram} RAM</span>
+            ${m.speed ? `<span>Velocidad: ${m.speed}</span>` : ''}
+            ${m.quality ? `<span>Calidad: ${m.quality}</span>` : ''}
+          </div>
+          ${m.desc ? `<p style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">${m.desc}</p>` : ''}
+        </div>
+      `).join('');
+    }
+    
+    let androidAppsHtml = '';
+    if (rec.androidApps) {
+      androidAppsHtml = `
+        <h4 style="margin: 16px 0 8px;">📱 Apps para Android:</h4>
+        ${rec.androidApps.map(app => `
+          <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 12px; margin-bottom: 8px;">
+            <strong>${app.name}</strong>
+            ${app.recommended ? '<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; margin-left: 8px;">RECOMENDADO</span>' : ''}
+            <p style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">${app.desc}</p>
+          </div>
+        `).join('')}
+      `;
+    }
+    
+    let tipsHtml = rec.tips ? rec.tips.map(tip => `<li style="margin-bottom: 4px;">${tip}</li>`).join('') : '';
+    
+    container.innerHTML = `
+      <div style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1)); border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+        <h3 style="margin-bottom: 8px;">${rec.title}</h3>
+        <p style="color: var(--text-secondary); font-size: 14px;">${rec.description}</p>
+        
+        <div style="display: flex; gap: 20px; margin-top: 16px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">💻</span>
+            <div>
+              <div style="font-size: 12px; color: var(--text-secondary);">Plataforma</div>
+              <strong>${hardware.platform.toUpperCase()}</strong>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">🧠</span>
+            <div>
+              <div style="font-size: 12px; color: var(--text-secondary);">RAM Detectada</div>
+              <strong>${hardware.ram} GB</strong>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">⚡</span>
+            <div>
+              <div style="font-size: 12px; color: var(--text-secondary);">CPU</div>
+              <strong>${hardware.cores} núcleos</strong>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 20px;">🎮</span>
+            <div>
+              <div style="font-size: 12px; color: var(--text-secondary);">GPU</div>
+              <strong style="font-size: 11px;">${hardware.gpu.name.slice(0, 30)}...</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      ${rec.canRunLocal ? `
+        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+          <strong style="color: var(--success);">✅ ${hardware.isMobile ? 'Puedes conectarte a un servidor' : 'Tu dispositivo puede ejecutar IA local'}</strong>
+        </div>
+      ` : `
+        <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+          <strong style="color: var(--warning);">⚠️ ${rec.suggestion}</strong>
+        </div>
+      `}
+      
+      ${modelsHtml ? `<h4 style="margin-bottom: 12px;">🤖 Modelos Recomendados:</h4>${modelsHtml}` : ''}
+      
+      ${androidAppsHtml}
+      
+      ${rec.install ? `
+        <div style="margin-top: 16px;">
+          <h4 style="margin-bottom: 8px;">📥 Instalación rápida:</h4>
+          <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; overflow-x: auto;">
+            ${rec.install}
+          </div>
+          <button onclick="navigator.clipboard.writeText('${rec.install}')" style="margin-top: 8px; background: var(--accent); border: none; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer;">
+            📋 Copiar comando
+          </button>
+        </div>
+      ` : ''}
+      
+      ${tipsHtml ? `
+        <div style="margin-top: 20px; background: rgba(59, 130, 246, 0.1); border-radius: 8px; padding: 16px;">
+          <h4 style="margin-bottom: 8px;">💡 Consejos:</h4>
+          <ul style="margin-left: 20px; font-size: 13px; color: var(--text-secondary);">${tipsHtml}</ul>
+        </div>
+      ` : ''}
+      
+      ${hardware.isMobile ? `
+        <div style="margin-top: 20px; background: rgba(139, 92, 246, 0.1); border-radius: 8px; padding: 16px;">
+          <h4 style="margin-bottom: 8px;">📱 Cómo usar desde Acode:</h4>
+          <ol style="margin-left: 20px; font-size: 13px; color: var(--text-secondary);">
+            <li>Instala Ollama en tu PC: <code>curl -fsSL https://ollama.com/install.sh | sh</code></li>
+            <li>Inicia este servidor API en tu PC</li>
+            <li>Obtén la IP de tu PC: <code>hostname -I</code></li>
+            <li>En Acode, configura la URL: <code>http://TU_IP:3000</code></li>
+            <li>¡Listo! Ya puedes usar tu IA local desde el móvil</li>
+          </ol>
+        </div>
+      ` : ''}
+    `;
+  } catch (error) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 40px; color: var(--danger);">
+        <p>❌ Error detectando hardware: ${error.message}</p>
+      </div>
+    `;
+  }
+}
+
+function closeHardwareModal() {
+  document.getElementById('hardwareModal').classList.remove('show');
+}
+</script>
+
+</body>
+</html>

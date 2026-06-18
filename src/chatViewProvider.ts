@@ -87,18 +87,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('useInternet', message.useInternet, vscode.ConfigurationTarget.Global);
         
-        // Si activa internet y el proveedor es ollama, cambiar a DuckDuckGo (GRATIS sin API key)
-        if (message.useInternet && config.get('provider') === 'ollama') {
-          await config.update('provider', 'duckduckgo', vscode.ConfigurationTarget.Global);
-        }
-        // Si desactiva internet, volver a ollama
-        if (!message.useInternet) {
-          await config.update('provider', 'ollama', vscode.ConfigurationTarget.Global);
-        }
+        // NO cambiar el proveedor - mantener la IA seleccionada
+        // El modo internet ahora añade búsqueda web a cualquier IA (incluyendo Ollama local)
         
         this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
-        this.post({ type: 'connectionStatus', ...status });
+        // Añadir indicador de modo internet
+        this.post({ 
+          type: 'connectionStatus', 
+          ...status,
+          internetEnabled: message.useInternet 
+        });
       }
     });
 
@@ -162,6 +161,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Modo chat: streaming directo con Ollama, sin tocar archivos del proyecto.
+   * Si el modo internet está activo, usa búsqueda web + IA local.
    */
   private async handleChatMode(text: string): Promise<void> {
     const status = await this.ollama.checkConnection();
@@ -180,13 +180,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'responseStart' });
     try {
-      await this.ollama.chatStream(
-        [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user',   content: text }
-        ],
-        (token) => this.post({ type: 'token', text: token })
-      );
+      const messages = [
+        { role: 'system' as const, content: SYSTEM_PROMPT },
+        { role: 'user' as const,   content: text }
+      ];
+
+      // Si internet está activo Y es Ollama local, usar búsqueda web + Ollama
+      if (this.ollama.isInternetEnabled() && this.ollama.getProvider() === 'ollama') {
+        await this.ollama.chatWithWebSearch(
+          messages,
+          (token) => this.post({ type: 'token', text: token })
+        );
+      } else {
+        // Modo normal (sin internet o con proveedor externo)
+        await this.ollama.chatStream(
+          messages,
+          (token) => this.post({ type: 'token', text: token })
+        );
+      }
       this.post({ type: 'responseEnd' });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -343,6 +354,28 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   .control-group select option {
     background: var(--vscode-dropdown-background, var(--bg-card));
     color: var(--vscode-foreground, var(--text));
+  }
+
+  .control-group select optgroup {
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    padding: 8px 0 4px;
+  }
+
+  .btn-icon {
+    background: var(--vscode-button-secondaryBackground, var(--bg-card));
+    border: 1px solid var(--vscode-button-border, var(--border));
+    color: var(--vscode-foreground, var(--text));
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+  }
+
+  .btn-icon:hover {
+    background: var(--vscode-button-hoverBackground, var(--primary));
+    transform: scale(1.05);
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
@@ -663,6 +696,246 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
+     SUGGESTIONS
+  ═══════════════════════════════════════════════════════════════════════════ */
+
+  .suggestions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .suggestion {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    background: var(--vscode-input-background, var(--bg-card));
+    border: 1px solid var(--vscode-input-border, var(--border));
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+  }
+
+  .suggestion:hover {
+    border-color: var(--primary);
+    transform: translateY(-2px);
+  }
+
+  .suggestion-icon {
+    font-size: 16px;
+  }
+
+  .btn-recommend {
+    margin-top: 16px;
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-recommend:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     MODAL
+  ═══════════════════════════════════════════════════════════════════════════ */
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .modal-overlay.show {
+    display: flex;
+  }
+
+  .modal {
+    background: var(--vscode-editor-background, var(--bg-card));
+    border: 1px solid var(--vscode-panel-border, var(--border));
+    border-radius: 12px;
+    width: 90%;
+    max-width: 400px;
+    max-height: 80vh;
+    overflow: hidden;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--vscode-panel-border, var(--border));
+    background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%);
+  }
+
+  .modal-header h3 {
+    font-size: 14px;
+    margin: 0;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--vscode-foreground);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+  }
+
+  .modal-body {
+    padding: 16px;
+    overflow-y: auto;
+    max-height: 60vh;
+    font-size: 12px;
+  }
+
+  .model-card {
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+
+  .model-card.recommended {
+    border-color: var(--primary);
+    background: rgba(139, 92, 246, 0.1);
+  }
+
+  .model-card h4 {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .model-card .badge {
+    background: var(--primary);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+  }
+
+  .model-card .specs {
+    display: flex;
+    gap: 12px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+  }
+
+  .model-card code {
+    display: block;
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 4px;
+    font-size: 11px;
+  }
+
+  .category-title {
+    margin: 16px 0 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    font-size: 13px;
+  }
+
+  /* API Cards */
+  .api-card {
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+
+  .api-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .badge-free {
+    background: #10B981;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+  }
+
+  .badge-paid {
+    background: #F59E0B;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+  }
+
+  .api-desc {
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    margin: 4px 0;
+  }
+
+  .api-input {
+    width: 100%;
+    padding: 8px;
+    margin-top: 8px;
+    background: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    color: var(--vscode-foreground);
+    font-size: 12px;
+  }
+
+  .api-link {
+    display: inline-block;
+    margin-top: 6px;
+    color: #8B5CF6;
+    font-size: 11px;
+    text-decoration: none;
+  }
+
+  .api-link:hover {
+    text-decoration: underline;
+  }
+
+  .btn-save {
+    width: 100%;
+    padding: 12px;
+    margin-top: 16px;
+    background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-save:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
      FOOTER CREADOR
   ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -730,31 +1003,49 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       <div class="title">Local Copilot</div>
       <div class="subtitle">Tu asistente de código con IA</div>
     </div>
-    <div class="status-badge online" id="status-badge">
-      <span class="status-dot"></span>
-      <span id="status-text">Conectando...</span>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <button class="btn-icon" onclick="openInBrowser()" title="Abrir en navegador">🌐</button>
+      <button class="btn-icon" onclick="showAPIsModal()" title="Configurar APIs">⚙️</button>
+      <div class="status-badge online" id="status-badge">
+        <span class="status-dot"></span>
+        <span id="status-text">Conectando...</span>
+      </div>
     </div>
   </div>
   <div class="controls">
     <div class="control-group">
       <label>🌐</label>
-      <select id="internet-mode">
+      <select id="internet-mode" onchange="setInternetMode(this.value)">
         <option value="false">Local</option>
-        <option value="true">Internet</option>
+        <option value="true">+Internet</option>
       </select>
     </div>
     <div class="control-group" style="flex:1">
       <label>🤖</label>
-      <select id="provider-select">
-        <option value="ollama">🏠 Ollama (local)</option>
-        <option value="duckduckgo">🦆 DuckDuckGo (gratis!)</option>
-        <option value="groq">⚡ Groq</option>
-        <option value="cerebras">⚡ Cerebras</option>
-        <option value="gemini">💎 Gemini</option>
-        <option value="together">🤝 Together</option>
-        <option value="cohere">🔷 Cohere</option>
-        <option value="huggingface">🤗 HuggingFace</option>
-        <option value="openrouter">🔀 OpenRouter</option>
+      <select id="provider-select" onchange="setProvider(this.value)">
+        <optgroup label="🏠 IAs Locales (Ollama)">
+          <option value="ollama">Ollama (auto)</option>
+        </optgroup>
+        <optgroup label="🆓 APIs Gratuitas">
+          <option value="duckduckgo">🦆 DuckDuckGo (sin API key)</option>
+          <option value="groq">⚡ Groq (muy rápido)</option>
+          <option value="cerebras">🧠 Cerebras (ultra rápido)</option>
+          <option value="together">🤝 Together AI</option>
+          <option value="cohere">🔷 Cohere</option>
+          <option value="huggingface">🤗 HuggingFace</option>
+        </optgroup>
+        <optgroup label="💎 APIs de Pago">
+          <option value="gemini">💎 Google Gemini</option>
+          <option value="openrouter">🔀 OpenRouter (GPT-4, Claude)</option>
+        </optgroup>
+      </select>
+    </div>
+  </div>
+  <div class="controls" id="ollama-models-row" style="display:none;">
+    <div class="control-group" style="flex:1">
+      <label>📦 Modelo:</label>
+      <select id="ollama-model-select">
+        <option value="">Cargando modelos...</option>
       </select>
     </div>
   </div>
@@ -778,6 +1069,128 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <div class="welcome-icon">🚀</div>
     <h2>¡Hola! Soy Local Copilot</h2>
     <p>Pregúntame lo que quieras sobre tu código. Puedo explicar, generar, arreglar y mucho más.</p>
+    
+    <div class="suggestions">
+      <div class="suggestion" onclick="useSuggestion('Explica qué hace este código')">
+        <span class="suggestion-icon">📚</span>
+        <span>Explicar código</span>
+      </div>
+      <div class="suggestion" onclick="useSuggestion('Genera una función para')">
+        <span class="suggestion-icon">✨</span>
+        <span>Generar código</span>
+      </div>
+      <div class="suggestion" onclick="useSuggestion('Arregla este error:')">
+        <span class="suggestion-icon">🔧</span>
+        <span>Arreglar errores</span>
+      </div>
+      <div class="suggestion" onclick="useSuggestion('Refactoriza este código para mejorarlo')">
+        <span class="suggestion-icon">⚡</span>
+        <span>Refactorizar</span>
+      </div>
+    </div>
+    
+    <button class="btn-recommend" onclick="showRecommendations()">
+      🎯 Ver IAs recomendadas para tu PC
+    </button>
+  </div>
+</div>
+
+<!-- MODAL RECOMENDACIONES -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modal-title">🎯 IAs Recomendadas</h3>
+      <button class="modal-close" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body" id="modal-body">
+      <p>Cargando...</p>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL APIs -->
+<div class="modal-overlay" id="apis-modal" onclick="closeAPIsModal()">
+  <div class="modal" style="max-width:450px;" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>⚙️ Configurar APIs de IA</h3>
+      <button class="modal-close" onclick="closeAPIsModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="category-title">🆓 APIs Gratuitas (Recomendadas)</div>
+      
+      <div class="api-card">
+        <div class="api-header">
+          <span>🦆 DuckDuckGo AI</span>
+          <span class="badge-free">GRATIS</span>
+        </div>
+        <p class="api-desc">Sin API key, sin límites, sin registro</p>
+        <small>Modelos: GPT-4o-mini, Claude-3-Haiku, Llama-3.3-70b</small>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>⚡ Groq</span>
+          <span class="badge-free">GRATIS</span>
+        </div>
+        <p class="api-desc">Ultra rápido, 14.400 tokens/min gratis</p>
+        <input type="password" id="groq-key" placeholder="API Key de Groq" class="api-input">
+        <a href="https://console.groq.com/keys" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>🧠 Cerebras</span>
+          <span class="badge-free">GRATIS</span>
+        </div>
+        <p class="api-desc">El más rápido del mundo, 8.000 tokens/min</p>
+        <input type="password" id="cerebras-key" placeholder="API Key de Cerebras" class="api-input">
+        <a href="https://cloud.cerebras.ai/" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>🤝 Together AI</span>
+          <span class="badge-free">$5 GRATIS</span>
+        </div>
+        <p class="api-desc">$5 de crédito gratis al registrarte</p>
+        <input type="password" id="together-key" placeholder="API Key de Together" class="api-input">
+        <a href="https://api.together.xyz/" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>🤗 HuggingFace</span>
+          <span class="badge-free">GRATIS</span>
+        </div>
+        <p class="api-desc">Miles de modelos gratuitos</p>
+        <input type="password" id="huggingface-key" placeholder="Token de HuggingFace" class="api-input">
+        <a href="https://huggingface.co/settings/tokens" target="_blank" class="api-link">Obtener Token →</a>
+      </div>
+
+      <div class="category-title">💎 APIs de Pago (Mayor calidad)</div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>💎 Google Gemini</span>
+          <span class="badge-paid">PAGO</span>
+        </div>
+        <p class="api-desc">Gemini Pro, Flash - desde $0.0001/1K tokens</p>
+        <input type="password" id="gemini-key" placeholder="API Key de Gemini" class="api-input">
+        <a href="https://aistudio.google.com/apikey" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
+          <span>🔀 OpenRouter</span>
+          <span class="badge-paid">PAGO</span>
+        </div>
+        <p class="api-desc">Acceso a GPT-4, Claude, Llama y más</p>
+        <input type="password" id="openrouter-key" placeholder="API Key de OpenRouter" class="api-input">
+        <a href="https://openrouter.ai/keys" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <button class="btn-save" onclick="saveAPIKeys()">💾 Guardar Configuración</button>
+    </div>
   </div>
 </div>
 
@@ -887,6 +1300,138 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   function removeTypingIndicator() {
     const typing = document.getElementById('typing');
     if (typing) typing.remove();
+  }
+
+  function useSuggestion(text) {
+    promptEl.value = text;
+    promptEl.focus();
+  }
+
+  function showRecommendations() {
+    const modal = document.getElementById('modal-overlay');
+    const body = document.getElementById('modal-body');
+    modal.classList.add('show');
+    
+    // Detectar RAM aproximada
+    const ram = navigator.deviceMemory || 8;
+    const cores = navigator.hardwareConcurrency || 4;
+    
+    let category, models;
+    
+    if (ram <= 4) {
+      category = '🟢 PC Básico (4GB RAM)';
+      models = [
+        { name: 'tinyllama:1.1b', size: '637MB', ram: '2GB', speed: '⚡⚡⚡⚡⚡', recommended: false },
+        { name: 'phi3:mini', size: '2.2GB', ram: '4GB', speed: '⚡⚡⚡⚡', recommended: true },
+        { name: 'gemma:2b', size: '1.7GB', ram: '4GB', speed: '⚡⚡⚡⚡', recommended: false },
+      ];
+    } else if (ram <= 8) {
+      category = '🟡 PC Medio (8GB RAM)';
+      models = [
+        { name: 'llama3.2:3b', size: '2.0GB', ram: '6GB', speed: '⚡⚡⚡⚡', recommended: true },
+        { name: 'mistral:7b', size: '4.1GB', ram: '8GB', speed: '⚡⚡⚡', recommended: true },
+        { name: 'codellama:7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', recommended: false },
+        { name: 'deepseek-coder:6.7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', recommended: false },
+      ];
+    } else if (ram <= 16) {
+      category = '🔴 PC Potente (16GB RAM)';
+      models = [
+        { name: 'llama3.1:8b', size: '4.7GB', ram: '10GB', speed: '⚡⚡⚡', recommended: true },
+        { name: 'codellama:13b', size: '7.4GB', ram: '16GB', speed: '⚡⚡', recommended: false },
+        { name: 'phi3:medium', size: '7.9GB', ram: '12GB', speed: '⚡⚡', recommended: false },
+        { name: 'mixtral:8x7b', size: '26GB', ram: '32GB', speed: '⚡', recommended: false },
+      ];
+    } else {
+      category = '🟣 Workstation (32GB+ RAM)';
+      models = [
+        { name: 'llama3.1:70b', size: '40GB', ram: '48GB', speed: '⚡', recommended: true },
+        { name: 'codellama:70b', size: '40GB', ram: '48GB', speed: '⚡', recommended: false },
+        { name: 'qwen2:72b', size: '41GB', ram: '48GB', speed: '⚡', recommended: false },
+      ];
+    }
+    
+    let html = '<div style="margin-bottom:12px;padding:12px;background:rgba(139,92,246,0.1);border-radius:8px;">';
+    html += '<strong>' + category + '</strong><br>';
+    html += '<small style="color:var(--vscode-descriptionForeground);">' + ram + 'GB RAM detectados • ' + cores + ' núcleos</small>';
+    html += '</div>';
+    
+    html += '<h4 class="category-title">Modelos recomendados:</h4>';
+    
+    models.forEach(m => {
+      html += '<div class="model-card' + (m.recommended ? ' recommended' : '') + '">';
+      html += '<h4>' + m.name + (m.recommended ? '<span class="badge">RECOMENDADO</span>' : '') + '</h4>';
+      html += '<div class="specs">';
+      html += '<span>📦 ' + m.size + '</span>';
+      html += '<span>🧠 ' + m.ram + '</span>';
+      html += '<span>⚡ ' + m.speed + '</span>';
+      html += '</div>';
+      html += '<code>ollama pull ' + m.name + '</code>';
+      html += '</div>';
+    });
+    
+    html += '<div style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.1);border-radius:8px;">';
+    html += '<strong>💡 Consejos:</strong><br>';
+    html += '<small>• Cierra apps pesadas antes de usar la IA<br>';
+    html += '• Los modelos :latest son los más optimizados<br>';
+    html += '• GPU NVIDIA acelera mucho la generación</small>';
+    html += '</div>';
+    
+    body.innerHTML = html;
+  }
+
+  function closeModal() {
+    document.getElementById('modal-overlay').classList.remove('show');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ABRIR EN NAVEGADOR
+  // ══════════════════════════════════════════════════════════════════════════
+  function openInBrowser() {
+    vscode.postMessage({ type: 'openInBrowser' });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MODAL APIs
+  // ══════════════════════════════════════════════════════════════════════════
+  function showAPIsModal() {
+    document.getElementById('apis-modal').classList.add('show');
+  }
+
+  function closeAPIsModal() {
+    document.getElementById('apis-modal').classList.remove('show');
+  }
+
+  function saveAPIKeys() {
+    const keys = {
+      groq: document.getElementById('groq-key')?.value || '',
+      cerebras: document.getElementById('cerebras-key')?.value || '',
+      together: document.getElementById('together-key')?.value || '',
+      huggingface: document.getElementById('huggingface-key')?.value || '',
+      gemini: document.getElementById('gemini-key')?.value || '',
+      openrouter: document.getElementById('openrouter-key')?.value || ''
+    };
+    vscode.postMessage({ type: 'saveAPIKeys', keys });
+    closeAPIsModal();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CARGAR MODELOS OLLAMA
+  // ══════════════════════════════════════════════════════════════════════════
+  function setProvider(provider) {
+    vscode.postMessage({ type: 'setProvider', provider });
+    
+    // Mostrar/ocultar selector de modelos Ollama
+    const ollamaRow = document.getElementById('ollama-models-row');
+    if (provider === 'ollama' && ollamaRow) {
+      ollamaRow.style.display = 'flex';
+      vscode.postMessage({ type: 'getOllamaModels' });
+    } else if (ollamaRow) {
+      ollamaRow.style.display = 'none';
+    }
+  }
+
+  function setInternetMode(value) {
+    vscode.postMessage({ type: 'setInternetMode', useInternet: value === 'true' });
   }
 
   function send() {

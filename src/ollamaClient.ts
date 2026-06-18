@@ -798,4 +798,132 @@ export class OllamaClient {
       req.end();
     });
   }
+
+  // ── Búsqueda Web con DuckDuckGo (para usar con Ollama local) ─────────────────
+
+  /**
+   * Realiza una búsqueda web usando DuckDuckGo y devuelve los resultados.
+   * Esta función permite que Ollama local tenga acceso a información de internet.
+   */
+  async searchWeb(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+    try {
+      const encodedQuery = encodeURIComponent(query);
+      const response = await fetch(
+        `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = await response.json() as {
+        AbstractText?: string;
+        AbstractSource?: string;
+        AbstractURL?: string;
+        RelatedTopics?: Array<{
+          Text?: string;
+          FirstURL?: string;
+        }>;
+      };
+
+      const results: { title: string; url: string; snippet: string }[] = [];
+
+      // Añadir el resultado principal si existe
+      if (data.AbstractText && data.AbstractURL) {
+        results.push({
+          title: data.AbstractSource || 'Resultado',
+          url: data.AbstractURL,
+          snippet: data.AbstractText.slice(0, 300)
+        });
+      }
+
+      // Añadir temas relacionados
+      if (data.RelatedTopics) {
+        for (const topic of data.RelatedTopics.slice(0, 5)) {
+          if (topic.Text && topic.FirstURL) {
+            results.push({
+              title: topic.Text.split(' - ')[0] || 'Relacionado',
+              url: topic.FirstURL,
+              snippet: topic.Text.slice(0, 200)
+            });
+          }
+        }
+      }
+
+      return results;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Chat con Ollama local + búsqueda web.
+   * Primero busca en internet, luego envía los resultados a Ollama para que responda.
+   */
+  async chatWithWebSearch(
+    messages: OllamaChatMessage[],
+    onToken: (token: string) => void,
+    model?: string
+  ): Promise<string> {
+    const lastMessage = messages[messages.length - 1]?.content || '';
+    
+    // Detectar si la pregunta necesita búsqueda web
+    const needsSearch = this.needsWebSearch(lastMessage);
+    
+    let webContext = '';
+    if (needsSearch) {
+      onToken('🔍 Buscando en internet...\n\n');
+      const searchResults = await this.searchWeb(lastMessage);
+      
+      if (searchResults.length > 0) {
+        webContext = '\n\n📚 **Información de Internet:**\n';
+        for (const result of searchResults) {
+          webContext += `\n• **${result.title}**: ${result.snippet}\n`;
+        }
+        webContext += '\n---\n\nUsa esta información para responder la pregunta del usuario:\n\n';
+      }
+    }
+
+    // Construir mensajes con contexto web
+    const enhancedMessages: OllamaChatMessage[] = [
+      ...messages.slice(0, -1),
+      {
+        role: 'user',
+        content: webContext + lastMessage
+      }
+    ];
+
+    // Usar Ollama local para responder
+    return this.chatStream(enhancedMessages, onToken, model);
+  }
+
+  /**
+   * Detecta si una pregunta necesita búsqueda web.
+   */
+  private needsWebSearch(text: string): boolean {
+    const webTriggers = [
+      'qué es', 'que es', 'quien es', 'quién es',
+      'busca', 'buscar', 'internet', 'web',
+      'actualidad', 'noticias', 'último', 'ultima',
+      'precio', 'cotización', 'tiempo', 'clima',
+      'cómo se hace', 'como se hace', 'tutorial',
+      'documentación', 'documentacion', 'docs',
+      'versión actual', 'version actual', 'latest',
+      '2024', '2025', '2026', 'hoy', 'ayer',
+      'reciente', 'nuevo', 'nueva'
+    ];
+    
+    const lowerText = text.toLowerCase();
+    return webTriggers.some(trigger => lowerText.includes(trigger));
+  }
+
+  /** Obtener si el modo internet está activo */
+  isInternetEnabled(): boolean {
+    return this.useInternet;
+  }
+
+  /** Obtener el proveedor actual */
+  getProvider(): ProviderName {
+    return this.provider;
+  }
 }

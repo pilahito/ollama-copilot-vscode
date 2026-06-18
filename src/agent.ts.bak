@@ -51,11 +51,9 @@ const MAX_FILE_CHARS    = 6_000;
 const MAX_SCAN_DEPTH    = 4;
 
 const RELEVANT_EXTENSIONS = new Set([
-  '.ts', '.js', '.tsx', '.jsx', '.java', '.kt', '.py',
-  '.yml', '.yaml', '.json', '.md', '.html', '.css', '.scss',
-  '.sh', '.sql', '.conf', '.properties', '.env', '.gitignore',
-  '.xml', '.gradle', '.toml', '.rs', '.go', '.php', '.rb',
-  '.c', '.cpp', '.h', '.hpp', '.vue', '.svelte'
+  '.ts', '.js', '.java', '.kt', '.py',
+  '.yml', '.yaml', '.json', '.md',
+  '.sh', '.sql', '.conf', '.properties'
 ]);
 
 const IGNORE_DIRS = new Set([
@@ -114,7 +112,7 @@ export class LocalAgent {
     const fileContents = await this.readFiles(relevantFiles);
 
     onProgress('⚙️ Generando la solución (esto puede tardar un poco con IA local)...');
-    const result = await this.generateSolution(userPrompt, projectTree, fileContents, rootPath);
+    const result = await this.generateSolution(userPrompt, projectTree, fileContents);
 
     if (result.actions.length > 0) {
       const approved = await this.requestConfirmation(result, onProgress);
@@ -227,62 +225,31 @@ export class LocalAgent {
   /**
    * Genera la solución final: explicación + lista de acciones de archivo.
    * Pide al modelo un formato estructurado y predecible para poder parsearlo.
-   * Si el modo internet está activo, añade contexto de búsqueda web.
    */
   private async generateSolution(
     userPrompt:   string,
     projectTree:  string[],
-    fileContents: Record<string, string>,
-    rootPath:     string
+    fileContents: Record<string, string>
   ): Promise<AgentResult> {
     const contextBlock = Object.entries(fileContents)
-      .map(([fp, content]) => {
-        const relPath = fp.replace(rootPath, '').replace(/^\//, '');
-        return `### Archivo: ${relPath}\n\`\`\`\n${content}\n\`\`\``;
-      })
+      .map(([fp, content]) => `### Archivo: ${fp}\n\`\`\`\n${content}\n\`\`\``)
       .join('\n\n');
 
-    // Añadir contexto de internet si está activado
-    let webContext = '';
-    if (this.ollama.isInternetEnabled() && this.ollama.getProvider() === 'ollama') {
-      const searchResults = await this.ollama.searchWeb(userPrompt);
-      if (searchResults.length > 0) {
-        webContext = '\n\n📚 **Información de Internet relevante:**\n';
-        for (const result of searchResults.slice(0, 3)) {
-          webContext += `• ${result.title}: ${result.snippet}\n`;
-        }
-        webContext += '\n';
-      }
-    }
-
     const systemPrompt =
-      `Eres Local, un ingeniero de software senior EXPERTO y AUTÓNOMO. ` +
-      `Tu misión es resolver problemas de código de forma COMPLETA y PROFESIONAL.\n\n` +
-      `🧠 CAPACIDADES:\n` +
-      `- Dominas TODOS los lenguajes: TypeScript, JavaScript, Python, Java, Go, Rust, C++, etc.\n` +
-      `- Frameworks: React, Vue, Angular, Next.js, Node.js, Django, FastAPI, Spring, etc.\n` +
-      `- DevOps: Docker, Kubernetes, CI/CD, Linux, bases de datos (SQL/NoSQL)\n` +
-      `- Minecraft: PaperMC, Spigot, Bukkit, plugins Java/Kotlin\n\n` +
-      `📋 REGLAS ESTRICTAS:\n` +
-      `1. SIEMPRE genera código COMPLETO y FUNCIONAL, nunca parcial ni con "...".\n` +
-      `2. Los comentarios van en ESPAÑOL.\n` +
-      `3. Las rutas son RELATIVAS sin barra inicial: "src/main.ts", NO "/src/main.ts".\n` +
-      `4. Usa las MEJORES PRÁCTICAS del lenguaje/framework.\n` +
-      `5. Incluye manejo de errores, tipos cuando aplique, y documentación.\n` +
-      `6. Si necesitas crear varios archivos relacionados, créalos TODOS.\n\n` +
-      `📝 FORMATO DE RESPUESTA (OBLIGATORIO):\n\n` +
-      `EXPLICACION:\n<Describe brevemente qué harás y por qué>\n\n` +
-      `ACCION: CREAR | RUTA: ruta/al/archivo.ext | MOTIVO: descripción\n` +
-      `<<CONTENIDO>>\n<código completo del archivo>\n<<FIN>>\n\n` +
-      `ACCION: MODIFICAR | RUTA: ruta/existente.ext | MOTIVO: descripción\n` +
-      `<<CONTENIDO>>\n<código completo modificado>\n<<FIN>>\n\n` +
-      `ACCION: ELIMINAR | RUTA: ruta/a/borrar.ext | MOTIVO: descripción\n` +
-      `<<CONTENIDO>>\n<<FIN>>\n\n` +
-      `⚠️ Si NO necesitas modificar archivos, responde solo la EXPLICACION sin bloques ACCION.`;
+      `Eres Local, ingeniero de software senior autónomo. Trabajas sobre servidores ` +
+      `Minecraft PaperMC, MariaDB y entornos Ubuntu/Linux, pero también ayudas con cualquier código. ` +
+      `Actúas de forma independiente: decides qué archivos crear o modificar y lo haces directamente, ` +
+      `sin pedir confirmación. Todos los comentarios de código van en español.\n\n` +
+      `Responde EXACTAMENTE en este formato, sin texto adicional fuera de él:\n\n` +
+      `EXPLICACION:\n<explicación clara de lo que vas a hacer>\n\n` +
+      `ACCION: CREAR | RUTA: <ruta/relativa/archivo> | MOTIVO: <motivo>\n` +
+      `<<CONTENIDO>>\n<contenido completo del archivo>\n<<FIN>>\n\n` +
+      `ACCION: MODIFICAR | RUTA: <ruta/relativa/archivo> | MOTIVO: <motivo>\n` +
+      `<<CONTENIDO>>\n<contenido completo del archivo>\n<<FIN>>\n\n` +
+      `Puedes incluir varios bloques ACCION. Si no hace falta tocar archivos, omite todos los bloques ACCION.`;
 
     const userMessage =
       `Petición del usuario: "${userPrompt}"\n\n` +
-      webContext +
       `Archivos relevantes del proyecto:\n` +
       (contextBlock || '(no se encontraron archivos existentes relevantes; puede que necesites crear uno nuevo)');
 
@@ -365,17 +332,13 @@ export class LocalAgent {
    * Aplica las acciones de archivo directamente sobre el disco
    * después de recibir confirmación del usuario. Las rutas relativas se
    * resuelven desde la raíz del workspace.
-   *
-   * Crea directorios padre recursivamente (fix EACCES permission denied).
    */
   private async applyActions(actions: FileAction[], rootPath: string): Promise<void> {
     for (const action of actions) {
       const fullPath = path.isAbsolute(action.filePath)
         ? action.filePath
         : path.join(rootPath, action.filePath);
-      
       const uri = vscode.Uri.file(fullPath);
-      const dirUri = vscode.Uri.file(path.dirname(fullPath));
 
       this.outputChannel.appendLine(`[${action.type.toUpperCase()}] ${fullPath} — ${action.reason}`);
 
@@ -383,8 +346,8 @@ export class LocalAgent {
         if (action.type === 'delete') {
           await vscode.workspace.fs.delete(uri);
         } else {
-          // FIX: Crear directorios padre recursivamente antes de escribir
-          await this.ensureDirectoryExists(dirUri);
+          // Asegura que el directorio padre existe antes de escribir.
+          await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(fullPath)));
           await vscode.workspace.fs.writeFile(uri, Buffer.from(action.content ?? '', 'utf-8'));
         }
       } catch (err: unknown) {
@@ -395,40 +358,6 @@ export class LocalAgent {
 
     if (actions.length > 0) {
       this.outputChannel.show(true);
-    }
-  }
-
-  /**
-   * Asegura que un directorio existe, creando padres recursivamente.
-   * (VS Code's createDirectory no es recursivo por defecto)
-   */
-  private async ensureDirectoryExists(uri: vscode.Uri): Promise<void> {
-    try {
-      await vscode.workspace.fs.stat(uri);
-      // Ya existe
-      return;
-    } catch {
-      // No existe, crear con padres
-    }
-
-    const parent = vscode.Uri.file(path.dirname(uri.fsPath));
-    
-    // Crear padre recursivamente si es necesario
-    if (parent.fsPath !== uri.fsPath) {
-      await this.ensureDirectoryExists(parent);
-    }
-
-    // Crear el directorio actual
-    try {
-      await vscode.workspace.fs.createDirectory(uri);
-    } catch (err: unknown) {
-      // Si falla, puede que ya exista (race condition)
-      try {
-        await vscode.workspace.fs.stat(uri);
-      } catch {
-        // Si stat también falla, es un error real
-        throw err;
-      }
     }
   }
 }
