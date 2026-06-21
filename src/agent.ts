@@ -124,8 +124,22 @@ export class LocalAgent {
     onProgress(`📂 Leyendo ${relevantFiles.length} archivo(s) relevante(s)...`);
     const fileContents = await this.readFiles(relevantFiles);
 
-    onProgress('⚙️ Generando la solución (esto puede tardar un poco con IA local)...');
-    const result = await this.generateSolution(userPrompt, projectTree, fileContents, rootPath, model, onProgress);
+    let webContext = '';
+    if (this.ollama.isInternetEnabled()) {
+      onProgress('🌐 +Internet activo: investigando en la web...');
+      const research = await this.ollama.researchWeb(userPrompt, { forAgent: true });
+      if (research.resultCount > 0) {
+        webContext = research.context;
+        onProgress(`📚 ${research.resultCount} resultado(s) web añadidos al agente`);
+      } else {
+        onProgress('⚠️ Sin resultados web; el agente usará solo el código local');
+      }
+    }
+
+    onProgress('⚙️ Generando código y aplicando cambios...');
+    const result = await this.generateSolution(
+      userPrompt, projectTree, fileContents, rootPath, model, onProgress, webContext
+    );
 
     const hasWork = result.actions.length > 0 || result.commands.length > 0;
 
@@ -257,21 +271,9 @@ export class LocalAgent {
     fileContents: Record<string, string>,
     rootPath:     string,
     model?:       string,
-    onProgress?:  (msg: string) => void
+    onProgress?:  (msg: string) => void,
+    webContext = ''
   ): Promise<AgentResult> {
-    // Añadir contexto de internet si está activado
-    let webContext = '';
-    if (this.ollama.isInternetEnabled() && this.ollama.getResolvedProvider() === 'ollama') {
-      const searchResults = await this.ollama.searchWeb(userPrompt);
-      if (searchResults.length > 0) {
-        webContext = '\n\n📚 **Información de Internet relevante:**\n';
-        for (const result of searchResults.slice(0, 3)) {
-          webContext += `• ${result.title}: ${result.snippet}\n`;
-        }
-        webContext += '\n';
-      }
-    }
-
     return this.generateSolutionWithRetry(
       userPrompt, projectTree, fileContents, rootPath, model, webContext, onProgress
     );
@@ -299,7 +301,8 @@ export class LocalAgent {
       `2. Rutas RELATIVAS: "src/agent.ts", nunca "/src/...".\n` +
       `3. Comentarios en español.\n` +
       `4. Si piden supervisar/revisar/arreglar → analiza Y aplica ACCION: MODIFICAR con el fix.\n` +
-      `5. Si piden crear/publicar/instalar → usa ACCION y/o COMANDO.\n\n` +
+      `5. Si piden crear/publicar/instalar → usa ACCION y/o COMANDO.\n` +
+      `6. Si hay INVESTIGACIÓN EN INTERNET → úsala para escribir código actualizado y luego ACCION.\n\n` +
       `FORMATO OBLIGATORIO:\n\n` +
       `EXPLICACION:\n<texto breve>\n\n` +
       `ACCION: MODIFICAR | RUTA: src/ejemplo.ts | MOTIVO: descripción\n` +

@@ -1110,6 +1110,74 @@ export class OllamaClient {
     }
   }
 
+  /** Varias búsquedas y deduplicación por URL. */
+  async searchWebMulti(queries: string[]): Promise<{ title: string; url: string; snippet: string }[]> {
+    const seen = new Set<string>();
+    const merged: { title: string; url: string; snippet: string }[] = [];
+
+    for (const query of queries) {
+      const q = query.trim().slice(0, 120);
+      if (!q) { continue; }
+
+      for (const hit of await this.searchWeb(q)) {
+        if (seen.has(hit.url)) { continue; }
+        seen.add(hit.url);
+        merged.push(hit);
+      }
+    }
+
+    return merged.slice(0, 10);
+  }
+
+  /** Consultas de búsqueda derivadas de la petición del usuario/agente. */
+  buildResearchQueries(prompt: string): string[] {
+    const base = prompt.replace(/\s+/g, ' ').trim().slice(0, 100);
+    const queries = new Set<string>([base]);
+
+    if (/\b(api|sdk|lib|framework|npm|discord|react|node|python|vscode|ollama)\b/i.test(prompt)) {
+      queries.add(`${base} documentación oficial`);
+      queries.add(`${base} ejemplo código`);
+    } else {
+      queries.add(`${base} tutorial`);
+    }
+
+    return [...queries].slice(0, 3);
+  }
+
+  /**
+   * Investiga en internet y devuelve contexto listo para el agente o el chat.
+   * Con +Internet activo siempre busca (no solo en preguntas "qué es...").
+   */
+  async researchWeb(
+    prompt: string,
+    options: { forAgent?: boolean } = {}
+  ): Promise<{ context: string; resultCount: number }> {
+    const queries = this.buildResearchQueries(prompt);
+    const results = await this.searchWebMulti(queries);
+
+    if (results.length === 0) {
+      return { context: '', resultCount: 0 };
+    }
+
+    let context = options.forAgent
+      ? '\n\n🌐 INVESTIGACIÓN EN INTERNET (usa esto para programar con info actualizada):\n'
+      : '\n\n📚 **Información de Internet:**\n';
+
+    for (const result of results) {
+      context += options.forAgent
+        ? `\n• ${result.title} (${result.url})\n  ${result.snippet}\n`
+        : `\n• **${result.title}**: ${result.snippet}\n`;
+    }
+
+    if (!options.forAgent) {
+      context += '\n---\n\nUsa esta información para responder:\n\n';
+    } else {
+      context += '\nAplica lo aprendido en los archivos con bloques ACCION.\n';
+    }
+
+    return { context, resultCount: results.length };
+  }
+
   /**
    * Chat con Ollama local + búsqueda web.
    * Primero busca en internet, luego envía los resultados a Ollama para que responda.
@@ -1120,22 +1188,12 @@ export class OllamaClient {
     model?: string
   ): Promise<string> {
     const lastMessage = messages[messages.length - 1]?.content || '';
-    
-    // Detectar si la pregunta necesita búsqueda web
-    const needsSearch = this.needsWebSearch(lastMessage);
-    
+
     let webContext = '';
-    if (needsSearch) {
-      onToken('🔍 Buscando en internet...\n\n');
-      const searchResults = await this.searchWeb(lastMessage);
-      
-      if (searchResults.length > 0) {
-        webContext = '\n\n📚 **Información de Internet:**\n';
-        for (const result of searchResults) {
-          webContext += `\n• **${result.title}**: ${result.snippet}\n`;
-        }
-        webContext += '\n---\n\nUsa esta información para responder la pregunta del usuario:\n\n';
-      }
+    if (this.useInternet || this.needsWebSearch(lastMessage)) {
+      onToken('🔍 Investigando en internet...\n\n');
+      const { context } = await this.researchWeb(lastMessage);
+      webContext = context;
     }
 
     // Construir mensajes con contexto web

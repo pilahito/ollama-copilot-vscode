@@ -250,14 +250,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         { role: 'user' as const,   content: text }
       ];
 
-      // Si internet está activo Y es Ollama local, usar búsqueda web + Ollama
-      if (this.ollama.isInternetEnabled() && this.ollama.getResolvedProvider() === 'ollama') {
-        await this.ollama.chatWithWebSearch(
-          messages,
-          (token) => this.post({ type: 'token', text: token })
-        );
+      if (this.ollama.isInternetEnabled()) {
+        if (this.ollama.getResolvedProvider() === 'ollama') {
+          await this.ollama.chatWithWebSearch(
+            messages,
+            (token) => this.post({ type: 'token', text: token })
+          );
+        } else {
+          this.post({ type: 'token', text: '🔍 Investigando en internet...\n\n' });
+          const { context } = await this.ollama.researchWeb(text);
+          const enhanced = context
+            ? [{ role: 'system' as const, content: SYSTEM_PROMPT }, { role: 'user' as const, content: context + text }]
+            : messages;
+          await this.ollama.chatStream(
+            enhanced,
+            (token) => this.post({ type: 'token', text: token })
+          );
+        }
       } else {
-        // Modo normal (sin internet o con proveedor externo)
         await this.ollama.chatStream(
           messages,
           (token) => this.post({ type: 'token', text: token })
