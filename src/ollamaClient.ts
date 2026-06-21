@@ -667,9 +667,11 @@ export class OllamaClient {
         messages,
         stream: true,
         options: {
-          temperature: 0.1,
-          num_predict: 8192,
-          top_p: 0.9,
+          temperature: 0.05,
+          num_predict: 12_288,
+          top_p: 0.85,
+          repeat_penalty: 1.15,
+          stop: ['<<FIN>>\n\n<<FIN>>'],
         },
       });
 
@@ -1059,46 +1061,50 @@ export class OllamaClient {
    * Realiza una búsqueda web usando DuckDuckGo y devuelve los resultados.
    * Esta función permite que Ollama local tenga acceso a información de internet.
    */
-  async searchWeb(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+  private decodeDdgRedirect(href: string): string {
+    const match = href.match(/uddg=([^&]+)/);
+    if (!match) { return href.startsWith('//') ? `https:${href}` : href; }
+    return decodeURIComponent(match[1]);
+  }
+
+  private stripHtml(text: string): string {
+    return text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  /** API instantánea de DuckDuckGo (suele devolver vacío en consultas técnicas). */
+  private async searchWebInstant(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
     try {
       const encodedQuery = encodeURIComponent(query);
       const response = await fetch(
         `https://api.duckduckgo.com/?q=${encodedQuery}&format=json&no_html=1&skip_disambig=1`
       );
 
-      if (!response.ok) {
-        return [];
-      }
+      if (!response.ok) { return []; }
 
       const data = await response.json() as {
         AbstractText?: string;
         AbstractSource?: string;
         AbstractURL?: string;
-        RelatedTopics?: Array<{
-          Text?: string;
-          FirstURL?: string;
-        }>;
+        RelatedTopics?: Array<{ Text?: string; FirstURL?: string }>;
       };
 
       const results: { title: string; url: string; snippet: string }[] = [];
 
-      // Añadir el resultado principal si existe
       if (data.AbstractText && data.AbstractURL) {
         results.push({
           title: data.AbstractSource || 'Resultado',
           url: data.AbstractURL,
-          snippet: data.AbstractText.slice(0, 300)
+          snippet: data.AbstractText.slice(0, 300),
         });
       }
 
-      // Añadir temas relacionados
       if (data.RelatedTopics) {
         for (const topic of data.RelatedTopics.slice(0, 5)) {
           if (topic.Text && topic.FirstURL) {
             results.push({
               title: topic.Text.split(' - ')[0] || 'Relacionado',
               url: topic.FirstURL,
-              snippet: topic.Text.slice(0, 200)
+              snippet: topic.Text.slice(0, 200),
             });
           }
         }
@@ -1108,6 +1114,111 @@ export class OllamaClient {
     } catch {
       return [];
     }
+  }
+
+  /** DuckDuckGo Lite HTML (más resultados que la API JSON). */
+  private async searchWebLite(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+    try {
+      const response = await fetch(
+        `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`,
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+          },
+          signal: AbortSignal.timeout(12_000),
+        }
+      );
+
+      if (!response.ok) { return []; }
+
+      const html = await response.text();
+      if (html.includes('anomaly-modal') || !html.includes('result-link')) { return []; }
+
+      const results: { title: string; url: string; snippet: string }[] = [];
+      const blockRe =
+        /<a[^>]+href="([^"]+)"[^>]*class='result-link'>([^<]+)<\/a>[\s\S]*?class='result-snippet'>\s*([\s\S]*?)<\/td>/gi;
+
+      let match: RegExpExecArray | null;
+      while ((match = blockRe.exec(html)) !== null && results.length < 6) {
+        const url = this.decodeDdgRedirect(match[1]);
+        const title = this.stripHtml(match[2]);
+        const snippet = this.stripHtml(match[3]).slice(0, 280);
+        if (title && url.startsWith('http')) {
+          results.push({ title, url, snippet: snippet || title });
+        }
+      }
+
+      return results;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Wikipedia (gratis, fiable). */
+  private async searchWikipedia(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+    try {
+      const lang = /\b(español|qué|cómo|bot|servidor)\b/i.test(query) ? 'es' : 'en';
+      const res = await fetch(
+        `https://${lang}.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=4&format=json`,
+        { signal: AbortSignal.timeout(8_000) }
+      );
+      if (!res.ok) { return []; }
+
+      const [, titles, descriptions, urls] = await res.json() as [string, string[], string[], string[]];
+      return titles.map((title, i) => ({
+        title,
+        url: urls[i] ?? '',
+        snippet: (descriptions[i] || title).slice(0, 280),
+      })).filter((r) => r.url);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Documentación npm de paquetes mencionados en la consulta. */
+  private async searchNpmDocs(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+    const q = query.toLowerCase();
+    const packages = ['discord.js', 'express', 'react', 'vue', 'ollama', 'dotenv']
+      .filter((pkg) => {
+        const key = pkg.replace('.', '');
+        return q.includes(pkg) || q.includes(key) ||
+          (pkg === 'discord.js' && /\b(discord|chatbot|bot)\b/.test(q));
+      });
+
+    const results: { title: string; url: string; snippet: string }[] = [];
+    for (const pkg of packages.slice(0, 2)) {
+      try {
+        const res = await fetch(`https://registry.npmjs.org/${pkg}`, { signal: AbortSignal.timeout(6_000) });
+        if (!res.ok) { continue; }
+        const data = await res.json() as { description?: string; homepage?: string };
+        results.push({
+          title: `npm: ${pkg}`,
+          url: data.homepage ?? `https://www.npmjs.com/package/${pkg}`,
+          snippet: data.description ?? `Paquete ${pkg} en npm`,
+        });
+      } catch { /* siguiente */ }
+    }
+    return results;
+  }
+
+  /**
+   * Búsqueda web multi-fuente: DDG JSON → DDG Lite → Wikipedia → npm.
+   */
+  async searchWeb(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
+    const sources = [
+      () => this.searchWebInstant(query),
+      () => this.searchWebLite(query),
+      () => this.searchWikipedia(query),
+      () => this.searchNpmDocs(query),
+    ];
+
+    for (const source of sources) {
+      const hits = await source();
+      if (hits.length > 0) { return hits; }
+    }
+
+    return [];
   }
 
   /** Varias búsquedas y deduplicación por URL. */

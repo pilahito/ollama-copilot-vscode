@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot gratuito para VS Code: autocompletado, chat, agente que programa con Ollama, +Internet para investigar, e integración GitHub.",
-  "version": "1.0.14",
+  "version": "1.0.25",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -35,6 +35,7 @@
     "vscode": "^1.85.0"
   },
   "categories": ["Programming Languages", "Machine Learning", "Other"],
+  "icon": "media/icon.png",
   "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
   "extensionDependencies": [
@@ -146,14 +147,14 @@
         {
           "id": "localcopilot",
           "title": "Local Copilot",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ],
       "secondarySidebar": [
         {
           "id": "localcopilot-chat",
           "title": "Local Copilot",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ]
     },
@@ -163,7 +164,7 @@
           "type": "webview",
           "id": "local.dockView",
           "name": "Local Copilot",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ],
       "localcopilot-chat": [
@@ -171,7 +172,7 @@
           "type": "webview",
           "id": "local.chatView",
           "name": "Chat IA",
-          "icon": "media/icon.svg"
+          "icon": "media/icon.png"
         }
       ]
     },

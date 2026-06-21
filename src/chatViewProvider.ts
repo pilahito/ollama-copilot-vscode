@@ -24,11 +24,12 @@
 import * as vscode from 'vscode';
 import { OllamaClient, ProviderName } from './ollamaClient';
 import { LocalAgent, FileAction, CommandAction } from './agent';
+import { enrichMessageWithEditor, needsEditorContext } from './editorContext';
 
 // ── Tipos de mensajes Webview ────────────────────────────────────────────────
 
 type WebviewInMessage =
-  | { type: 'send'; text: string; mode: 'chat' | 'agent' }
+  | { type: 'send'; text: string; mode: 'chat' | 'agent'; includeEditor?: boolean }
   | { type: 'checkConnection' }
   | { type: 'setProvider'; provider: string }
   | { type: 'setInternetMode'; useInternet: boolean }
@@ -41,6 +42,11 @@ type WebviewInMessage =
 
 const SYSTEM_PROMPT =
   'Eres Local, ingeniero de software senior. Respondes siempre en español, de forma técnica y directa.';
+
+const EXPLAIN_CODE_PROMPT =
+  'Eres Local, experto en código. El usuario te envía código del editor de VS Code. ' +
+  'Explica qué hace paso a paso en español, claro y conciso. ' +
+  'Si hay un bloque ``` con código, analízalo SIEMPRE — nunca digas que falta código.';
 
 /**
  * Vista de chat en la barra lateral (como el panel de Copilot Chat).
@@ -70,11 +76,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
-    webviewView.webview.html    = this.getHtml();
+    webviewView.webview.html    = this.getHtml(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage(async (message: WebviewInMessage) => {
       if (message.type === 'send') {
-        await this.handleUserMessage(message.text, message.mode);
+        await this.handleUserMessage(message.text, message.mode, message.includeEditor === true);
       } else if (message.type === 'checkConnection') {
         const status = await this.ollama.checkConnection();
         this.post({ type: 'connectionStatus', ...status, currentModel: this.getCurrentModel() });
@@ -171,12 +177,41 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   // ── Lógica de mensajes ────────────────────────────────────────────────────────
 
-  private async handleUserMessage(text: string, mode: 'chat' | 'agent'): Promise<void> {
-    if (mode === 'agent') {
-      await this.handleAgentMode(text);
+  private async handleUserMessage(
+    text: string,
+    mode: 'chat' | 'agent',
+    includeEditor = false
+  ): Promise<void> {
+    const wantsCode = includeEditor || needsEditorContext(text);
+    const enriched  = enrichMessageWithEditor(text, includeEditor);
+
+    if (wantsCode && !enriched.attached) {
+      this.post({
+        type: 'response',
+        text:
+          '⚠️ **No detecté código en el editor.**\n\n' +
+          '1. Abre un archivo `.js`, `.ts`, etc. en el panel **izquierdo**\n' +
+          '2. Haz clic en el editor (para que quede como último archivo abierto)\n' +
+          '3. Vuelve a pedir la explicación\n\n' +
+          '_El chat no puede leer el editor si no hay ningún archivo de código abierto._',
+        done: true,
+      });
       return;
     }
-    await this.handleChatMode(text);
+
+    if (enriched.attached) {
+      this.post({
+        type: 'contextAttached',
+        filePath: enriched.filePath,
+        source: enriched.source,
+      });
+    }
+
+    if (mode === 'agent') {
+      await this.handleAgentMode(enriched.text);
+      return;
+    }
+    await this.handleChatMode(enriched.text, enriched.attached);
   }
 
   /**
@@ -187,6 +222,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const config = vscode.workspace.getConfiguration('local');
       const agentModel = config.get<string>('chatModel') || config.get<string>('completionModel');
+      this.post({ type: 'progress', text: `🧠 Ollama (${agentModel ?? 'local'}) programando tu proyecto…` });
       const result = await this.agent.handleRequest(text, (progress) => {
         this.post({ type: 'progress', text: progress });
       }, agentModel);
@@ -217,6 +253,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           : '_El agente no generó cambios. Sé más específico: "Modifica src/archivo.ts y arregla X"._';
       }
 
+      if (result.actions.length > 0 || result.commands.length > 0) {
+        summary += '\n_Aplicado por **Ollama** en modo Agente (no asistente externo)._';
+      }
+
       this.post({ type: 'response', text: summary, done: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -228,7 +268,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
    * Modo chat: streaming directo con Ollama, sin tocar archivos del proyecto.
    * Si el modo internet está activo, usa búsqueda web + IA local.
    */
-  private async handleChatMode(text: string): Promise<void> {
+  private async handleChatMode(text: string, hasEditorCode = false): Promise<void> {
     const status = await this.ollama.checkConnection();
     if (!status.ok) {
       const providerName = status.provider === 'gemini'
@@ -245,12 +285,19 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'responseStart' });
     try {
+      const systemContent = hasEditorCode || needsEditorContext(text)
+        ? EXPLAIN_CODE_PROMPT
+        : SYSTEM_PROMPT;
+
       const messages = [
-        { role: 'system' as const, content: SYSTEM_PROMPT },
+        { role: 'system' as const, content: systemContent },
         { role: 'user' as const,   content: text }
       ];
 
-      if (this.ollama.isInternetEnabled()) {
+      // Con código del editor no hace falta buscar en internet primero
+      const skipWeb = hasEditorCode || needsEditorContext(text);
+
+      if (this.ollama.isInternetEnabled() && !skipWeb) {
         if (this.ollama.getResolvedProvider() === 'ollama') {
           await this.ollama.chatWithWebSearch(
             messages,
@@ -260,7 +307,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'token', text: '🔍 Investigando en internet...\n\n' });
           const { context } = await this.ollama.researchWeb(text);
           const enhanced = context
-            ? [{ role: 'system' as const, content: SYSTEM_PROMPT }, { role: 'user' as const, content: context + text }]
+            ? [{ role: 'system' as const, content: systemContent }, { role: 'user' as const, content: context + text }]
             : messages;
           await this.ollama.chatStream(
             enhanced,
@@ -268,6 +315,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           );
         }
       } else {
+        if (hasEditorCode) {
+          this.post({ type: 'token', text: '📂 Analizando código del editor...\n\n' });
+        }
         await this.ollama.chatStream(
           messages,
           (token) => this.post({ type: 'token', text: token })
@@ -304,7 +354,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   // ── HTML de la Webview ────────────────────────────────────────────────────────
 
-  private getHtml(): string {
+  private getHtml(webview: vscode.Webview): string {
+    const iconUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.png')
+    ).toString();
+
     return /* html */ `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -356,13 +410,23 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   .logo {
     width: 32px;
     height: 32px;
-    background: linear-gradient(135deg, #8B5CF6 0%, #3B82F6 100%);
     border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    overflow: hidden;
+    flex-shrink: 0;
   }
+
+  .brand-icon, .avatar-img, .welcome-icon-img, .tab-icon-img {
+    object-fit: cover;
+    border-radius: inherit;
+  }
+
+  .brand-icon { width: 32px; height: 32px; border-radius: 8px; }
+  .avatar-img { width: 100%; height: 100%; border-radius: 50%; }
+  .welcome-icon-img { width: 64px; height: 64px; border-radius: 14px; margin-bottom: 16px; }
+  .tab-icon-img { width: 16px; height: 16px; border-radius: 4px; vertical-align: middle; }
 
   .title-section {
     flex: 1;
@@ -545,8 +609,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   .welcome-icon {
-    font-size: 48px;
-    margin-bottom: 16px;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 4px;
   }
 
   .welcome h2 {
@@ -1100,7 +1165,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <!-- HEADER -->
 <div class="header">
   <div class="header-top">
-    <div class="logo">🤖</div>
+    <div class="logo"><img src="${iconUri}" alt="Local Copilot" class="brand-icon" /></div>
     <div class="title-section">
       <div class="title">Local Copilot</div>
       <div class="subtitle">Tu asistente de código con IA</div>
@@ -1123,7 +1188,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       </select>
     </div>
     <div class="control-group" style="flex:1">
-      <label>🤖</label>
+      <label><img src="${iconUri}" alt="" class="tab-icon-img" /></label>
       <select id="provider-select" onchange="setProvider(this.value)">
         <optgroup label="🏠 IA Local">
           <option value="auto">🔄 Auto (detecta Ollama)</option>
@@ -1161,7 +1226,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span>Chat</span>
   </button>
   <button class="mode-tab" id="mode-agent" onclick="setMode('agent')">
-    <span class="icon">🤖</span>
+    <span class="icon"><img src="${iconUri}" alt="" class="tab-icon-img" /></span>
     <span>Agente</span>
   </button>
 </div>
@@ -1169,7 +1234,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <!-- MESSAGES -->
 <div class="messages" id="messages">
   <div class="welcome" id="welcome">
-    <div class="welcome-icon">🚀</div>
+    <div class="welcome-icon"><img src="${iconUri}" alt="" class="welcome-icon-img" /></div>
     <h2>¡Hola! Soy Local Copilot</h2>
     <p>Pregúntame lo que quieras sobre tu código. Puedo explicar, generar, arreglar y mucho más.</p>
     
@@ -1292,7 +1357,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <div class="input-area">
   <div class="input-container">
     <textarea id="prompt" placeholder="Pregunta algo sobre tu código..." rows="1"></textarea>
-    <button class="send-btn" id="send">➤</button>
+    <button class="send-btn" id="send-btn" type="button">➤</button>
   </div>
   <div class="input-hint">
     <span id="hint">💬 Chat: responde preguntas sin modificar archivos</span>
@@ -1311,12 +1376,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.5</span>
+    <span class="version-badge">v1.0.25</span>
   </div>
 </div>
 
 <script>
   const vscode = acquireVsCodeApi();
+  const APP_ICON = ${JSON.stringify(iconUri)};
   const messagesEl = document.getElementById('messages');
   const welcomeEl = document.getElementById('welcome');
   const promptEl = document.getElementById('prompt');
@@ -1341,7 +1407,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     if (teacherTab) teacherTab.classList.toggle('active', m === 'teacher');
 
     document.getElementById('hint').innerHTML = m === 'agent'
-      ? '🤖 Agente: analiza y modifica archivos automáticamente'
+      ? 'Agente: analiza y modifica archivos automáticamente'
       : m === 'teacher'
       ? '🎓 Profesor: explica paso a paso'
       : '💬 Chat: responde preguntas sin modificar archivos';
@@ -1367,7 +1433,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
-    avatar.textContent = role === 'user' ? '👤' : '🤖';
+    if (role === 'user') {
+      avatar.textContent = '👤';
+    } else {
+      avatar.innerHTML = '<img src="' + APP_ICON + '" alt="" class="avatar-img" />';
+    }
     
     const content = document.createElement('div');
     content.className = 'message-content';
@@ -1396,7 +1466,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     div.className = 'message ai';
     div.id = 'typing';
     div.innerHTML = \`
-      <div class="avatar">🤖</div>
+      <div class="avatar"><img src="\${APP_ICON}" alt="" class="avatar-img" /></div>
       <div class="message-content">
         <div class="message-bubble">
           <div class="typing-indicator">
@@ -1414,9 +1484,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     if (typing) typing.remove();
   }
 
+  function wantsEditorContext(text) {
+    return /explica|explain|qu[eé] hace|arregla|fix|refactoriza|este c[oó]digo|this code/i.test(text);
+  }
+
   function useSuggestion(text) {
-    promptEl.value = text;
-    promptEl.focus();
+    addMessage('user', text);
+    addTypingIndicator();
+    vscode.postMessage({ type: 'send', text, mode: 'chat', includeEditor: true });
   }
 
   let lastInstalledModels = [];
@@ -1594,16 +1669,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  function send() {
+  let isSending = false;
+
+  function submitPrompt() {
     const text = promptEl.value.trim();
-    if (!text) return;
-    
+    if (!text || isSending) return;
+    isSending = true;
+
     addMessage('user', text);
     promptEl.value = '';
     promptEl.style.height = 'auto';
     addTypingIndicator();
-    
-    vscode.postMessage({ type: 'send', text, mode });
+
+    vscode.postMessage({
+      type: 'send',
+      text,
+      mode,
+      includeEditor: wantsEditorContext(text),
+    });
   }
 
   // Auto-resize textarea
@@ -1621,11 +1704,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     setInternetMode(internetEl.value);
   });
 
-  document.getElementById('send').addEventListener('click', send);
+  document.getElementById('send-btn').addEventListener('click', submitPrompt);
   promptEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      send();
+      submitPrompt();
     }
   });
 
@@ -1712,18 +1795,26 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         
       case 'responseEnd':
         currentAiEl = null;
+        isSending = false;
         break;
         
       case 'response':
         removeTypingIndicator();
-        if (msg.done) addMessage('ai', msg.text);
+        if (msg.done) {
+          addMessage('ai', msg.text);
+          isSending = false;
+        }
         break;
         
       case 'prefill':
         setMode(msg.mode ?? 'chat');
         promptEl.value = msg.text;
         promptEl.focus();
-        send();
+        submitPrompt();
+        break;
+
+      case 'contextAttached':
+        addMessage('ai', '📎 Código adjunto desde ' + (msg.filePath || 'editor'));
         break;
 
       case 'ollamaModels':

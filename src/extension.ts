@@ -27,6 +27,7 @@ import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
 import { LocalChatViewProvider }          from './chatViewProvider';
 import { LocalDockViewProvider }          from './dockViewProvider';
 import { GitHubService }                   from './githubService';
+import { initEditorContextTracking }       from './editorContext';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,8 @@ async function onDockIconActivated(): Promise<void> {
 // ── Activación ────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
+  initEditorContextTracking(context);
+
   const ollama        = new OllamaClient();
   const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
@@ -178,28 +181,21 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
 
-    // Explica el código seleccionado en el chat lateral.
+    // Explica el código del editor (selección o archivo visible).
     vscode.commands.registerCommand('local.explainCode', async () => {
-      const code = getSelectedCode();
-      if (!code) { return; }
-
       void openLocalChat();
-      chatProvider.sendExternalPrompt(
-        `Explica en español qué hace este código:\n\n${code}`,
-        'chat'
-      );
+      chatProvider.sendExternalPrompt('Explica qué hace este código', 'chat');
     }),
 
-    // Envía el código seleccionado al agente para que lo corrija directamente.
+    // Envía el código del editor al agente para que lo corrija directamente.
     vscode.commands.registerCommand('local.fixError', async () => {
       const editor = vscode.window.activeTextEditor;
-      const code   = getSelectedCode();
-      if (!code || !editor) { return; }
+      if (!editor) { return; }
 
       const filePath = editor.document.uri.fsPath;
       void openLocalChat();
       chatProvider.sendExternalPrompt(
-        `Arregla el siguiente código del archivo ${filePath}. Aplica el cambio directamente:\n\n${code}`,
+        `Arregla el código del archivo ${filePath}`,
         'agent'
       );
     }),
@@ -377,15 +373,4 @@ function createStatusBar(context: vscode.ExtensionContext): vscode.StatusBarItem
   return item;
 }
 
-/**
- * Devuelve el texto seleccionado en el editor activo.
- * Si no hay selección, muestra un aviso y devuelve `undefined`.
- */
-function getSelectedCode(): string | undefined {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.selection.isEmpty) {
-    vscode.window.showWarningMessage('Selecciona código primero.');
-    return undefined;
-  }
-  return editor.document.getText(editor.selection);
-}
+
