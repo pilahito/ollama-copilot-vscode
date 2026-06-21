@@ -109,13 +109,13 @@ export class LocalAgent {
     const projectTree = await this.scanProjectStructure(rootPath);
 
     onProgress('🧠 Analizando qué archivos son relevantes para tu petición...');
-    const relevantFiles = await this.identifyRelevantFiles(userPrompt, projectTree, rootPath);
+    const relevantFiles = await this.identifyRelevantFiles(userPrompt, projectTree, rootPath, model);
 
     onProgress(`📂 Leyendo ${relevantFiles.length} archivo(s) relevante(s)...`);
     const fileContents = await this.readFiles(relevantFiles);
 
     onProgress('⚙️ Generando la solución (esto puede tardar un poco con IA local)...');
-    const result = await this.generateSolution(userPrompt, projectTree, fileContents, rootPath);
+    const result = await this.generateSolution(userPrompt, projectTree, fileContents, rootPath, model);
 
     if (result.actions.length > 0) {
       const approved = await this.requestConfirmation(result, onProgress);
@@ -175,7 +175,8 @@ export class LocalAgent {
   private async identifyRelevantFiles(
     userPrompt:  string,
     projectTree: string[],
-    rootPath:    string
+    rootPath:    string,
+    model?:      string
   ): Promise<string[]> {
     const treeSnippet = projectTree
       .slice(0, MAX_TREE_ENTRIES)
@@ -234,7 +235,8 @@ export class LocalAgent {
     userPrompt:   string,
     projectTree:  string[],
     fileContents: Record<string, string>,
-    rootPath:     string
+    rootPath:     string,
+    model?:       string
   ): Promise<AgentResult> {
     const contextBlock = Object.entries(fileContents)
       .map(([fp, content]) => {

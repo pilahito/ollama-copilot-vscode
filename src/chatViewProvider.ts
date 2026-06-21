@@ -33,7 +33,9 @@ type WebviewInMessage =
   | { type: 'setProvider'; provider: string }
   | { type: 'setInternetMode'; useInternet: boolean }
   | { type: 'getOllamaModels' }
-  | { type: 'setModel'; model: string };
+  | { type: 'setModel'; model: string }
+  | { type: 'openInBrowser' }
+  | { type: 'saveAPIKeys'; keys: Record<string, string> };
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -75,7 +77,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         await this.handleUserMessage(message.text, message.mode);
       } else if (message.type === 'checkConnection') {
         const status = await this.ollama.checkConnection();
-        this.post({ type: 'connectionStatus', ...status });
+        this.post({ type: 'connectionStatus', ...status, currentModel: this.getCurrentModel() });
       } else if (message.type === 'setProvider') {
         await vscode.workspace.getConfiguration('local').update(
           'provider',
@@ -85,7 +87,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
         const useInternet = this.ollama.isInternetEnabled();
-        this.post({ type: 'connectionStatus', ...status, internetEnabled: useInternet });
+        this.post({
+          type: 'connectionStatus',
+          ...status,
+          internetEnabled: useInternet,
+          currentModel: this.getCurrentModel(),
+        });
       } else if (message.type === 'setInternetMode') {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('useInternet', message.useInternet, vscode.ConfigurationTarget.Global);
@@ -95,23 +102,34 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         
         this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
-        this.post({ 
-          type: 'connectionStatus', 
+        this.post({
+          type: 'connectionStatus',
           ...status,
-          internetEnabled: message.useInternet 
+          internetEnabled: message.useInternet,
+          currentModel: this.getCurrentModel(),
         });
       } else if (message.type === 'getOllamaModels') {
+        await this.loadOllamaModels();
+      } else if (message.type === 'openInBrowser') {
+        vscode.env.openExternal(vscode.Uri.parse('https://github.com/pilahito/ollama-copilot-vscode'));
+      } else if (message.type === 'saveAPIKeys') {
         const config = vscode.workspace.getConfiguration('local');
-        const current = config.get('chatModel', '') || config.get('completionModel', '');
-        // Siempre obtener las instaladas localmente, aunque el proveedor actual sea internet
-        const installed = await this.ollama.getInstalledOllamaModels();
-        if (installed.length > 0) {
-          this.post({ type: 'ollamaModels', models: installed, currentModel: current });
-        } else {
-          // Fallback a checkConnection
-          const status = await this.ollama.checkConnection();
-          this.post({ type: 'ollamaModels', models: status.models || [], currentModel: current });
+        const keyMap: Record<string, string> = {
+          groq: 'groqApiKey',
+          cerebras: 'cerebrasApiKey',
+          together: 'togetherApiKey',
+          huggingface: 'huggingfaceApiKey',
+          gemini: 'geminiApiKey',
+          openrouter: 'openRouterApiKey',
+        };
+        for (const [key, setting] of Object.entries(keyMap)) {
+          const value = message.keys[key]?.trim();
+          if (value) {
+            await config.update(setting, value, vscode.ConfigurationTarget.Global);
+          }
         }
+        this.ollama.refreshConfig();
+        vscode.window.showInformationMessage('✓ Claves API guardadas.');
       } else if (message.type === 'setModel') {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('chatModel', message.model, vscode.ConfigurationTarget.Global);
@@ -120,18 +138,23 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         vscode.window.showInformationMessage(`✓ Modelo cambiado a: ${message.model}`);
         // Refresh connection status so UI updates
         const status = await this.ollama.checkConnection();
-        this.post({ type: 'connectionStatus', ...status });
+        this.post({ type: 'connectionStatus', ...status, currentModel: this.getCurrentModel() });
       }
     });
 
     // Comprueba la conexión nada más abrir la vista y detecta modelos instalados
     this.ollama.checkConnection().then((status) => {
       const useInternet = this.ollama.isInternetEnabled();
-      this.post({ type: 'connectionStatus', ...status, internetEnabled: useInternet });
+      this.post({
+        type: 'connectionStatus',
+        ...status,
+        internetEnabled: useInternet,
+        currentModel: this.getCurrentModel(),
+      });
     });
-    
+
     // Siempre detectar IAs instaladas al cargar (independiente del proveedor)
-    vscode.postMessage({ type: 'getOllamaModels' });
+    void this.loadOllamaModels();
   }
 
   // ── API pública ───────────────────────────────────────────────────────────────
@@ -235,6 +258,22 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
+
+  private getCurrentModel(): string {
+    const config = vscode.workspace.getConfiguration('local');
+    return config.get<string>('chatModel', '') || config.get<string>('completionModel', '');
+  }
+
+  private async loadOllamaModels(): Promise<void> {
+    const current = this.getCurrentModel();
+    const installed = await this.ollama.getInstalledOllamaModels();
+    if (installed.length > 0) {
+      this.post({ type: 'ollamaModels', models: installed, currentModel: current });
+      return;
+    }
+    const status = await this.ollama.checkConnection();
+    this.post({ type: 'ollamaModels', models: status.models || [], currentModel: current });
+  }
 
   private post(msg: Record<string, unknown>): void {
     this.view?.webview.postMessage(msg);
@@ -1246,7 +1285,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.0</span>
+    <span class="version-badge">v1.0.1</span>
   </div>
 </div>
 
@@ -1266,7 +1305,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     mode = m;
     document.getElementById('mode-chat').classList.toggle('active', m === 'chat');
     document.getElementById('mode-agent').classList.toggle('active', m === 'agent');
-    document.getElementById('mode-teacher').classList.toggle('active', m === 'teacher');
+    const teacherTab = document.getElementById('mode-teacher');
+    if (teacherTab) teacherTab.classList.toggle('active', m === 'teacher');
 
     document.getElementById('hint').innerHTML = m === 'agent'
       ? '🤖 Agente: analiza y modifica archivos automáticamente'
@@ -1582,8 +1622,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
             } else {
               // For remote/internet providers, prefill the current model from config
               // so user can edit the model name (e.g. llama-3.3-70b for Groq)
-              const config = vscode.workspace.getConfiguration('local');
-              const current = config.get('chatModel', '') || config.get('completionModel', '');
+              const current = msg.currentModel || '';
               const select = document.getElementById('ollama-model-select');
               if (select) {
                 select.innerHTML = '';

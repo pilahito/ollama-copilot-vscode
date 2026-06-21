@@ -42,6 +42,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
 
+  // Auto-detect and select the best installed model on startup for the user's PC
+  // (will refresh status after)
+
   // ── Status bar ──────────────────────────────────────────────────────────────
 
   async function refreshStatusBar(): Promise<void> {
@@ -70,6 +73,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // el usuario lanza Ollama después de abrir VS Code.
   refreshStatusBar();
   const interval = setInterval(refreshStatusBar, POLLING_INTERVAL_MS);
+
+  // Auto-detect best model from installed (using ollama list) and apply
+  ollama.autoSelectBestModels().then(() => {
+    void refreshStatusBar();
+  }).catch(() => {});
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
 
   context.subscriptions.push(
@@ -145,7 +153,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const code = getSelectedCode();
       if (!code) { return; }
 
-      vscode.commands.executeCommand('workbench.view.extension.local-sidebar');
+      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
       chatProvider.sendExternalPrompt(
         `Explica en español qué hace este código:\n\n${code}`,
         'chat'
@@ -159,7 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!code || !editor) { return; }
 
       const filePath = editor.document.uri.fsPath;
-      vscode.commands.executeCommand('workbench.view.extension.local-sidebar');
+      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
       chatProvider.sendExternalPrompt(
         `Arregla el siguiente código del archivo ${filePath}. Aplica el cambio directamente:\n\n${code}`,
         'agent'
@@ -168,7 +176,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Pide al agente que analice la estructura general del proyecto.
     vscode.commands.registerCommand('local.analyzeProject', () => {
-      vscode.commands.executeCommand('workbench.view.extension.local-sidebar');
+      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
       chatProvider.sendExternalPrompt(
         'Analiza la estructura general de este proyecto y dime qué mejorarías o si detectas algún problema.',
         'agent'

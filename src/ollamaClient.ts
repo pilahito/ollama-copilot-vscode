@@ -289,6 +289,50 @@ export class OllamaClient {
     }
   }
 
+  /**
+   * Automatically select the best models from installed ones for the user's PC.
+   * Prefers coder models, chooses lighter for completion, suitable for chat.
+   * Updates the VS Code settings automatically.
+   */
+  async autoSelectBestModels(): Promise<{ chatModel: string; completionModel: string } | null> {
+    const installed = await this.getInstalledOllamaModels();
+    if (installed.length === 0) {
+      return null;
+    }
+
+    const config = vscode.workspace.getConfiguration('local');
+    const currentChat = config.get<string>('chatModel', '');
+    const currentCompletion = config.get<string>('completionModel', '');
+    const installedMatch = (name: string) => installed.some((m) => m === name || m.startsWith(`${name}:`));
+
+    if (installedMatch(currentChat) && installedMatch(currentCompletion)) {
+      return { chatModel: currentChat, completionModel: currentCompletion };
+    }
+
+    let chatModel = currentChat;
+    let completionModel = currentCompletion;
+    const has = (name: string) => installed.some((m) => m.includes(name));
+
+    if (has('qwen2.5-coder:7b')) {
+      completionModel = installed.find((m) => m.includes('qwen2.5-coder:7b')) ?? 'qwen2.5-coder:7b';
+      chatModel = has('qwen2.5-coder:14b')
+        ? (installed.find((m) => m.includes('qwen2.5-coder:14b')) ?? 'qwen2.5-coder:14b')
+        : completionModel;
+    } else if (has('llama3.2')) {
+      const llama = installed.find((m) => m.includes('llama3.2')) ?? 'llama3.2:latest';
+      completionModel = llama;
+      chatModel = llama;
+    } else {
+      completionModel = installed[0];
+      chatModel = installed[0];
+    }
+
+    await config.update('chatModel', chatModel, vscode.ConfigurationTarget.Global);
+    await config.update('completionModel', completionModel, vscode.ConfigurationTarget.Global);
+    this.refreshConfig();
+    return { chatModel, completionModel };
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
