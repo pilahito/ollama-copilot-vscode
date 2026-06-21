@@ -11,11 +11,13 @@ echo "Necesitas un PAT de Azure DevOps con scope: Marketplace → Manage"
 echo "Crearlo: https://dev.azure.com → User settings → Personal access tokens"
 echo ""
 
-read -rsp "Pega tu PAT (no se mostrará): " VSCE_PAT
-echo ""
+if [[ -z "${VSCE_PAT:-}" ]]; then
+  read -rsp "Pega tu PAT (no se mostrará): " VSCE_PAT
+  echo ""
+fi
 
-if [[ -z "$VSCE_PAT" ]]; then
-  echo "Error: PAT vacío."
+if [[ -z "${VSCE_PAT:-}" ]]; then
+  echo "Error: PAT vacío. Usa: VSCE_PAT='tu-token' ./scripts/first-publish.sh"
   exit 1
 fi
 

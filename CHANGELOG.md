@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.33] - 2026-06-22
+
+### Changed
+- Publicación sincronizada en GitHub Releases y VS Code Marketplace
+
 ## [1.0.32] - 2026-06-22
 
 ### Added
