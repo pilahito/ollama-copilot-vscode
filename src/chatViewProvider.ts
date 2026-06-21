@@ -79,18 +79,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         const status = await this.ollama.checkConnection();
         this.post({ type: 'connectionStatus', ...status, currentModel: this.getCurrentModel() });
       } else if (message.type === 'setProvider') {
-        await vscode.workspace.getConfiguration('local').update(
-          'provider',
-          message.provider,
-          vscode.ConfigurationTarget.Global
-        );
+        const config = vscode.workspace.getConfiguration('local');
+        await config.update('provider', message.provider, vscode.ConfigurationTarget.Global);
+        const useInternet = message.provider !== 'ollama' && message.provider !== 'auto';
+        await config.update('useInternet', useInternet, vscode.ConfigurationTarget.Global);
         this.ollama.refreshConfig();
+        await this.ollama.resolveAutoProvider();
         const status = await this.ollama.checkConnection();
-        const useInternet = this.ollama.isInternetEnabled();
         this.post({
           type: 'connectionStatus',
           ...status,
-          internetEnabled: useInternet,
+          internetEnabled: this.ollama.isInternetEnabled(),
           currentModel: this.getCurrentModel(),
         });
       } else if (message.type === 'setInternetMode') {
@@ -111,7 +110,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       } else if (message.type === 'getOllamaModels') {
         await this.loadOllamaModels();
       } else if (message.type === 'openInBrowser') {
-        vscode.env.openExternal(vscode.Uri.parse('https://github.com/pilahito/ollama-copilot-vscode'));
+        await this.ollama.resolveAutoProvider();
+        const url = this.ollama.getBrowserChatUrl();
+        const browser = this.ollama.getBrowserName();
+        vscode.env.openExternal(vscode.Uri.parse(url));
+        vscode.window.showInformationMessage(`Abriendo en ${browser}: ${url}`);
       } else if (message.type === 'saveAPIKeys') {
         const config = vscode.workspace.getConfiguration('local');
         const keyMap: Record<string, string> = {
@@ -238,7 +241,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       ];
 
       // Si internet está activo Y es Ollama local, usar búsqueda web + Ollama
-      if (this.ollama.isInternetEnabled() && this.ollama.getProvider() === 'ollama') {
+      if (this.ollama.isInternetEnabled() && this.ollama.getResolvedProvider() === 'ollama') {
         await this.ollama.chatWithWebSearch(
           messages,
           (token) => this.post({ type: 'token', text: token })
@@ -1059,6 +1062,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     color: #A78BFA;
     margin-left: 8px;
   }
+
+  .auto-hint {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--vscode-descriptionForeground, var(--text-muted));
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+  }
 </style>
 </head>
 <body>
@@ -1072,7 +1086,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       <div class="subtitle">Tu asistente de código con IA</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center;">
-      <button class="btn-icon" onclick="openInBrowser()" title="Abrir en navegador">🌐</button>
+      <button class="btn-icon" onclick="openInBrowser()" title="Abrir chat en tu navegador predeterminado">🌐</button>
       <button class="btn-icon" onclick="showAPIsModal()" title="Configurar APIs">⚙️</button>
       <div class="status-badge online" id="status-badge">
         <span class="status-dot"></span>
@@ -1081,21 +1095,15 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <div class="controls">
-    <div class="control-group">
-      <label>🌐</label>
-      <select id="internet-mode" onchange="setInternetMode(this.value)">
-        <option value="false">Local</option>
-        <option value="true">+Internet</option>
-      </select>
-    </div>
     <div class="control-group" style="flex:1">
       <label>🤖</label>
       <select id="provider-select" onchange="setProvider(this.value)">
-        <optgroup label="🏠 IAs Locales (Ollama)">
-          <option value="ollama">Ollama (auto)</option>
+        <optgroup label="✨ Recomendado">
+          <option value="auto">🔄 Auto (Ollama → DuckDuckGo)</option>
+          <option value="ollama">🏠 Ollama local</option>
+          <option value="duckduckgo">🦆 DuckDuckGo (navegador)</option>
         </optgroup>
         <optgroup label="🆓 APIs Gratuitas">
-          <option value="duckduckgo">🦆 DuckDuckGo (sin API key)</option>
           <option value="groq">⚡ Groq (muy rápido)</option>
           <option value="cerebras">🧠 Cerebras (ultra rápido)</option>
           <option value="together">🤝 Together AI</option>
@@ -1109,6 +1117,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       </select>
     </div>
   </div>
+  <div class="auto-hint" id="auto-hint" style="display:none;"></div>
   <div class="controls" id="ollama-models-row" style="display:none;">
     <div class="control-group" style="flex:1">
       <label>📦 Modelo:</label>
@@ -1285,7 +1294,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.1</span>
+    <span class="version-badge">v1.0.2</span>
   </div>
 </div>
 
@@ -1295,7 +1304,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   const welcomeEl = document.getElementById('welcome');
   const promptEl = document.getElementById('prompt');
   const providerEl = document.getElementById('provider-select');
-  const internetEl = document.getElementById('internet-mode');
+  const autoHintEl = document.getElementById('auto-hint');
   const statusBadge = document.getElementById('status-badge');
   const statusText = document.getElementById('status-text');
   let mode = 'chat';
@@ -1317,7 +1326,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     // Show model selector for Ollama even in agent/teacher mode
     const ollamaRow = document.getElementById('ollama-models-row');
     const provider = document.getElementById('provider-select')?.value;
-    if (ollamaRow && provider === 'ollama') {
+    if (ollamaRow && (provider === 'ollama' || provider === 'auto')) {
       ollamaRow.style.display = 'flex';
     }
   }
@@ -1531,23 +1540,24 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   // ══════════════════════════════════════════════════════════════════════════
   function setProvider(provider) {
     vscode.postMessage({ type: 'setProvider', provider });
-    
-    // Show model selector for Ollama or any remote provider (internet)
-    const ollamaRow = document.getElementById('ollama-models-row');
-    if (ollamaRow) {
-      if (provider === 'ollama' || !!provider) {
-        ollamaRow.style.display = 'flex';
-        if (provider === 'ollama') {
-          vscode.postMessage({ type: 'getOllamaModels' });
-        }
-      } else {
-        ollamaRow.style.display = 'none';
-      }
-    }
-  }
 
-  function setInternetMode(value) {
-    vscode.postMessage({ type: 'setInternetMode', useInternet: value === 'true' });
+    const ollamaRow = document.getElementById('ollama-models-row');
+    if (!ollamaRow) return;
+
+    if (provider === 'ollama' || provider === 'auto') {
+      ollamaRow.style.display = 'flex';
+      if (provider === 'ollama') {
+        vscode.postMessage({ type: 'getOllamaModels' });
+      }
+    } else if (provider === 'duckduckgo') {
+      ollamaRow.style.display = 'none';
+      if (autoHintEl) {
+        autoHintEl.style.display = 'block';
+        autoHintEl.textContent = '🦆 DuckDuckGo: se abrirá en tu navegador predeterminado. Pulsa 🌐.';
+      }
+    } else {
+      ollamaRow.style.display = 'flex';
+    }
   }
 
   function send() {
@@ -1572,10 +1582,6 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     vscode.postMessage({ type: 'setProvider', provider: providerEl.value });
   });
 
-  internetEl.addEventListener('change', () => {
-    vscode.postMessage({ type: 'setInternetMode', useInternet: internetEl.value === 'true' });
-  });
-
   document.getElementById('send').addEventListener('click', send);
   promptEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1587,15 +1593,30 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   window.addEventListener('message', ({ data: msg }) => {
     switch (msg.type) {
       case 'connectionStatus': {
-        const provider = msg.provider || 'ollama';
-        const useInternet = msg.internetEnabled !== undefined ? !!msg.internetEnabled : (provider !== 'ollama');
+        const provider = msg.provider || 'auto';
+        const effective = msg.effectiveProvider || provider;
+        const browser = msg.browserName || 'tu navegador';
         providerEl.value = provider;
-        internetEl.value = String(useInternet);
-        
+
+        if (autoHintEl) {
+          if (msg.autoMode) {
+            autoHintEl.style.display = 'block';
+            autoHintEl.textContent = effective === 'ollama'
+              ? '🔄 Auto: Ollama local detectado. Usando tus modelos instalados.'
+              : '🔄 Auto: sin Ollama → DuckDuckGo en ' + browser + '. Pulsa 🌐 para abrir duck.ai.';
+          } else if (effective === 'duckduckgo') {
+            autoHintEl.style.display = 'block';
+            autoHintEl.textContent = '🦆 DuckDuckGo en ' + browser + '. Pulsa 🌐 para abrir el chat web.';
+          } else {
+            autoHintEl.style.display = 'none';
+          }
+        }
+
         statusBadge.className = 'status-badge ' + (msg.ok ? 'online' : 'offline');
-        
+
         if (msg.ok) {
           const labels = {
+            auto: '🔄 Auto',
             ollama: '🏠 Ollama',
             duckduckgo: '🦆 DuckDuckGo',
             gemini: '💎 Gemini',
@@ -1604,41 +1625,39 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
             together: '🤝 Together',
             cohere: '🔷 Cohere',
             huggingface: '🤗 HuggingFace',
-            openrouter: '🔀 OpenRouter'
+            openrouter: '🔀 OpenRouter',
           };
-          statusText.textContent = (labels[provider] || provider) + ' ✓';
+          const label = provider === 'auto'
+            ? (labels.auto + ' → ' + (labels[effective] || effective))
+            : (labels[provider] || provider);
+          statusText.textContent = label + ' ✓';
         } else {
-          statusText.textContent = 'Desconectado';
+          statusText.textContent = msg.message || 'Desconectado';
         }
 
-        // Show the model selector row for Ollama AND for internet providers
-        // so the user can see / change the specific model they want to use with internet
         const ollamaRow = document.getElementById('ollama-models-row');
         if (ollamaRow) {
-          if (provider === 'ollama' || !!provider) {
+          if (effective === 'ollama') {
             ollamaRow.style.display = 'flex';
-            if (provider === 'ollama') {
-              vscode.postMessage({ type: 'getOllamaModels' });
-            } else {
-              // For remote/internet providers, prefill the current model from config
-              // so user can edit the model name (e.g. llama-3.3-70b for Groq)
-              const current = msg.currentModel || '';
-              const select = document.getElementById('ollama-model-select');
-              if (select) {
-                select.innerHTML = '';
-                const val = current || (provider === 'duckduckgo' ? 'gpt-4o-mini' : '');
-                if (val) {
-                  const opt = document.createElement('option');
-                  opt.value = val;
-                  opt.textContent = val;
-                  opt.selected = true;
-                  select.appendChild(opt);
-                } else {
-                  const opt = document.createElement('option');
-                  opt.value = '';
-                  opt.textContent = 'Escribe el modelo (ej: llama-3.3-70b-versatile)';
-                  select.appendChild(opt);
-                }
+            vscode.postMessage({ type: 'getOllamaModels' });
+          } else if (provider !== 'auto' && provider !== 'ollama') {
+            ollamaRow.style.display = 'flex';
+            const current = msg.currentModel || '';
+            const select = document.getElementById('ollama-model-select');
+            if (select) {
+              select.innerHTML = '';
+              const val = current || (effective === 'duckduckgo' ? 'gpt-4o-mini' : '');
+              if (val) {
+                const opt = document.createElement('option');
+                opt.value = val;
+                opt.textContent = val;
+                opt.selected = true;
+                select.appendChild(opt);
+              } else {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'Escribe el modelo (ej: llama-3.3-70b-versatile)';
+                select.appendChild(opt);
               }
             }
           } else {

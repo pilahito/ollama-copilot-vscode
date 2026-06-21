@@ -247,7 +247,7 @@ export class LocalAgent {
 
     // Añadir contexto de internet si está activado
     let webContext = '';
-    if (this.ollama.isInternetEnabled() && this.ollama.getProvider() === 'ollama') {
+    if (this.ollama.isInternetEnabled() && this.ollama.getResolvedProvider() === 'ollama') {
       const searchResults = await this.ollama.searchWeb(userPrompt);
       if (searchResults.length > 0) {
         webContext = '\n\n📚 **Información de Internet relevante:**\n';

@@ -23,6 +23,7 @@
  */
 
 import * as http from 'http';
+import { execSync } from 'child_process';
 import * as vscode from 'vscode';
 
 /** Resultado de la comprobación de conexión con el proveedor activo. */
@@ -30,6 +31,9 @@ export interface OllamaConnectionResult {
   ok: boolean;
   models: string[];
   provider: string;
+  effectiveProvider?: string;
+  autoMode?: boolean;
+  browserName?: string;
   message?: string;
 }
 
@@ -39,7 +43,17 @@ export interface OllamaChatMessage {
   content: string;
 }
 
-export type ProviderName = 'ollama' | 'duckduckgo' | 'gemini' | 'openrouter' | 'groq' | 'cohere' | 'together' | 'cerebras' | 'huggingface';
+export type ProviderName =
+  | 'auto'
+  | 'ollama'
+  | 'duckduckgo'
+  | 'gemini'
+  | 'openrouter'
+  | 'groq'
+  | 'cohere'
+  | 'together'
+  | 'cerebras'
+  | 'huggingface';
 
 /**
  * Cliente para comunicarse con el servidor Ollama local y proveedores de IA gratuitos.
@@ -69,6 +83,8 @@ export class OllamaClient {
   private cerebrasModel: string;
   private huggingfaceApiKey: string;
   private huggingfaceModel: string;
+  private autoResolvedProvider: ProviderName = 'duckduckgo';
+  private cachedBrowserName?: string;
 
   // ── Timeouts ────────────────────────────────────────────────────────────────
   private static readonly TIMEOUT_GET_MS  = 2_000;
@@ -76,7 +92,7 @@ export class OllamaClient {
 
   constructor() {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
-    this.provider = this.getConfig<ProviderName>('provider', 'ollama');
+    this.provider = this.getConfig<ProviderName>('provider', 'auto');
     this.useInternet = this.getConfig('useInternet', false);
     this.geminiApiKey = this.getConfig('geminiApiKey', '');
     this.geminiModel = this.getConfig('geminiModel', 'gemini-2.0-flash-exp');
@@ -104,7 +120,7 @@ export class OllamaClient {
   /** Refresca la configuración desde el usuario (por si cambió la API o el proveedor). */
   refreshConfig(): void {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
-    this.provider = this.getConfig<ProviderName>('provider', 'ollama');
+    this.provider = this.getConfig<ProviderName>('provider', 'auto');
     this.useInternet = this.getConfig('useInternet', false);
     this.geminiApiKey = this.getConfig('geminiApiKey', '');
     this.geminiModel = this.getConfig('geminiModel', 'gemini-2.0-flash-exp');
@@ -123,6 +139,69 @@ export class OllamaClient {
     this.huggingfaceModel = this.getConfig('huggingfaceModel', 'meta-llama/Llama-3.2-11B-Vision-Instruct');
   }
 
+  /** Detecta el navegador predeterminado del sistema (Brave, Firefox, Chrome…). */
+  getBrowserName(): string {
+    if (this.cachedBrowserName) {
+      return this.cachedBrowserName;
+    }
+
+    const configured = this.getConfig<string>('browserName', '');
+    if (configured) {
+      this.cachedBrowserName = configured;
+      return configured;
+    }
+
+    try {
+      const desktop = execSync('xdg-settings get default-web-browser 2>/dev/null', {
+        encoding: 'utf8',
+        timeout: 2000,
+      }).trim().toLowerCase();
+
+      if (desktop.includes('brave')) { this.cachedBrowserName = 'Brave'; }
+      else if (desktop.includes('firefox')) { this.cachedBrowserName = 'Firefox'; }
+      else if (desktop.includes('chrome')) { this.cachedBrowserName = 'Chrome'; }
+      else if (desktop.includes('chromium')) { this.cachedBrowserName = 'Chromium'; }
+      else if (desktop.includes('edge')) { this.cachedBrowserName = 'Edge'; }
+      else { this.cachedBrowserName = 'tu navegador'; }
+    } catch {
+      this.cachedBrowserName = 'tu navegador';
+    }
+
+    return this.cachedBrowserName;
+  }
+
+  /**
+   * Resuelve el modo Auto: Ollama si hay modelos instalados,
+   * si no DuckDuckGo vía internet/navegador.
+   */
+  async resolveAutoProvider(): Promise<ProviderName> {
+    if (this.provider !== 'auto') {
+      this.autoResolvedProvider = this.provider;
+      return this.provider;
+    }
+
+    const installed = await this.getInstalledOllamaModels();
+    this.autoResolvedProvider = installed.length > 0 ? 'ollama' : 'duckduckgo';
+    return this.autoResolvedProvider;
+  }
+
+  getEffectiveProvider(): ProviderName {
+    return this.provider === 'auto' ? this.autoResolvedProvider : this.provider;
+  }
+
+  isEffectiveInternetMode(): boolean {
+    if (this.provider === 'auto') {
+      return this.autoResolvedProvider !== 'ollama';
+    }
+    return this.useInternet;
+  }
+
+  getBrowserChatUrl(): string {
+    return this.getEffectiveProvider() === 'ollama'
+      ? 'https://ollama.com'
+      : 'https://duck.ai';
+  }
+
   // ── Estado de conexión ───────────────────────────────────────────────────────
 
   /**
@@ -132,6 +211,19 @@ export class OllamaClient {
    */
   async checkConnection(): Promise<OllamaConnectionResult> {
     this.refreshConfig();
+    await this.resolveAutoProvider();
+
+    const effective = this.getEffectiveProvider();
+    const useInternet = this.isEffectiveInternetMode();
+    const browserName = this.getBrowserName();
+    const autoMode = this.provider === 'auto';
+    const withMeta = (result: OllamaConnectionResult): OllamaConnectionResult => ({
+      ...result,
+      provider: this.provider,
+      effectiveProvider: effective,
+      autoMode,
+      browserName,
+    });
 
     // Siempre detectar las IAs instaladas localmente con Ollama, aunque uses proveedor internet
     let installedOllamaModels: string[] = [];
@@ -143,121 +235,116 @@ export class OllamaClient {
       // Ollama no disponible
     }
 
-    if (this.useInternet) {
+    if (useInternet) {
       // DuckDuckGo AI - GRATIS sin API key
-      if (this.provider === 'duckduckgo') {
+      if (effective === 'duckduckgo') {
         this.connected = true;
-        return {
+        return withMeta({
           ok: true,
           models: ['gpt-4o-mini', 'claude-3-haiku', 'llama-3.3-70b', 'mixtral-8x7b'],
-          provider: 'duckduckgo'
-        };
+          provider: 'duckduckgo',
+          message: autoMode
+            ? `Sin Ollama local → DuckDuckGo en ${browserName}`
+            : `DuckDuckGo vía ${browserName}`,
+        });
       }
 
-      if (this.provider === 'gemini') {
+      if (effective === 'gemini') {
         if (!this.geminiApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'gemini',
-            message: 'Añade una API key de Gemini en la configuración.'
-          };
+            message: 'Añade una API key de Gemini en la configuración.',
+          });
         }
         this.connected = true;
-        return {
-          ok: true,
-          models: [this.geminiModel],
-          provider: 'gemini'
-        };
+        return withMeta({ ok: true, models: [this.geminiModel], provider: 'gemini' });
       }
 
-      if (this.provider === 'openrouter') {
+      if (effective === 'openrouter') {
         if (!this.openRouterApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'openrouter',
-            message: 'Añade una API key de OpenRouter en la configuración.'
-          };
+            message: 'Añade una API key de OpenRouter en la configuración.',
+          });
         }
         this.connected = true;
-        return {
-          ok: true,
-          models: [this.openRouterModel],
-          provider: 'openrouter'
-        };
+        return withMeta({ ok: true, models: [this.openRouterModel], provider: 'openrouter' });
       }
 
-      if (this.provider === 'groq') {
+      if (effective === 'groq') {
         if (!this.groqApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'groq',
-            message: 'Añade una API key de Groq (gratis en console.groq.com).'
-          };
+            message: 'Añade una API key de Groq (gratis en console.groq.com).',
+          });
         }
         this.connected = true;
-        return { ok: true, models: [this.groqModel], provider: 'groq' };
+        return withMeta({ ok: true, models: [this.groqModel], provider: 'groq' });
       }
 
-      if (this.provider === 'cohere') {
+      if (effective === 'cohere') {
         if (!this.cohereApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'cohere',
-            message: 'Añade una API key de Cohere (gratis en dashboard.cohere.com).'
-          };
+            message: 'Añade una API key de Cohere (gratis en dashboard.cohere.com).',
+          });
         }
         this.connected = true;
-        return { ok: true, models: [this.cohereModel], provider: 'cohere' };
+        return withMeta({ ok: true, models: [this.cohereModel], provider: 'cohere' });
       }
 
-      if (this.provider === 'together') {
+      if (effective === 'together') {
         if (!this.togetherApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'together',
-            message: 'Añade una API key de Together AI (gratis en together.ai).'
-          };
+            message: 'Añade una API key de Together AI (gratis en together.ai).',
+          });
         }
         this.connected = true;
-        return { ok: true, models: [this.togetherModel], provider: 'together' };
+        return withMeta({ ok: true, models: [this.togetherModel], provider: 'together' });
       }
 
-      if (this.provider === 'cerebras') {
+      if (effective === 'cerebras') {
         if (!this.cerebrasApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'cerebras',
-            message: 'Añade una API key de Cerebras (gratis en cerebras.ai).'
-          };
+            message: 'Añade una API key de Cerebras (gratis en cerebras.ai).',
+          });
         }
         this.connected = true;
-        return { ok: true, models: [this.cerebrasModel], provider: 'cerebras' };
+        return withMeta({ ok: true, models: [this.cerebrasModel], provider: 'cerebras' });
       }
 
-      if (this.provider === 'huggingface') {
+      if (effective === 'huggingface') {
         if (!this.huggingfaceApiKey) {
           this.connected = false;
-          return {
+          return withMeta({
             ok: false,
             models: [],
             provider: 'huggingface',
-            message: 'Añade un token de HuggingFace (gratis en huggingface.co/settings/tokens).'
-          };
+            message: 'Añade un token de HuggingFace (gratis en huggingface.co/settings/tokens).',
+          });
         }
         this.connected = true;
-        return { ok: true, models: [this.huggingfaceModel], provider: 'huggingface' };
+        return withMeta({ ok: true, models: [this.huggingfaceModel], provider: 'huggingface' });
       }
     }
 
@@ -266,15 +353,22 @@ export class OllamaClient {
       const parsed = JSON.parse(data);
       const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
       this.connected = true;
-      return { ok: true, models, provider: 'ollama' };
+      return withMeta({
+        ok: true,
+        models,
+        provider: 'ollama',
+        message: autoMode ? 'Auto → Ollama local detectado' : undefined,
+      });
     } catch {
       this.connected = false;
-      return {
+      return withMeta({
         ok: false,
         models: [],
         provider: 'ollama',
-        message: 'No se detecta Ollama en localhost:11434.'
-      };
+        message: autoMode
+          ? `Sin Ollama → usa DuckDuckGo en ${browserName}`
+          : 'No se detecta Ollama en localhost:11434.',
+      });
     }
   }
 
@@ -348,13 +442,16 @@ export class OllamaClient {
    */
   async generateCompletion(prompt: string, model?: string): Promise<string> {
     this.refreshConfig();
+    await this.resolveAutoProvider();
+    const effective = this.getEffectiveProvider();
+    const useInternet = this.isEffectiveInternetMode();
     const useModel = model ?? this.getConfig('completionModel', 'codellama:13b');
 
-    if (this.useInternet && this.provider === 'duckduckgo') {
+    if (useInternet && effective === 'duckduckgo') {
       return await this.fetchDuckDuckGoChat([{ role: 'user', content: prompt }]);
     }
 
-    if (this.useInternet && this.provider === 'gemini') {
+    if (useInternet && effective === 'gemini') {
       const response = await this.fetchGeminiChat(
         [{ role: 'user', content: prompt }],
         useModel,
@@ -363,7 +460,7 @@ export class OllamaClient {
       return response;
     }
 
-    if (this.useInternet && this.provider === 'openrouter') {
+    if (useInternet && effective === 'openrouter') {
       const response = await this.fetchOpenRouterChat(
         [{ role: 'user', content: prompt }],
         useModel,
@@ -372,23 +469,23 @@ export class OllamaClient {
       return response;
     }
 
-    if (this.useInternet && this.provider === 'groq') {
+    if (useInternet && effective === 'groq') {
       return await this.fetchGroqChat([{ role: 'user', content: prompt }], useModel);
     }
 
-    if (this.useInternet && this.provider === 'cohere') {
+    if (useInternet && effective === 'cohere') {
       return await this.fetchCohereChat([{ role: 'user', content: prompt }], useModel);
     }
 
-    if (this.useInternet && this.provider === 'together') {
+    if (useInternet && effective === 'together') {
       return await this.fetchTogetherChat([{ role: 'user', content: prompt }], useModel);
     }
 
-    if (this.useInternet && this.provider === 'cerebras') {
+    if (useInternet && effective === 'cerebras') {
       return await this.fetchCerebrasChat([{ role: 'user', content: prompt }], useModel);
     }
 
-    if (this.useInternet && this.provider === 'huggingface') {
+    if (useInternet && effective === 'huggingface') {
       return await this.fetchHuggingFaceChat([{ role: 'user', content: prompt }], useModel);
     }
 
@@ -428,51 +525,54 @@ export class OllamaClient {
     model?:   string
   ): Promise<string> {
     this.refreshConfig();
+    await this.resolveAutoProvider();
+    const effective = this.getEffectiveProvider();
+    const useInternet = this.isEffectiveInternetMode();
     const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
 
-    if (this.useInternet && this.provider === 'duckduckgo') {
+    if (useInternet && effective === 'duckduckgo') {
       const response = await this.fetchDuckDuckGoChat(messages);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'gemini') {
+    if (useInternet && effective === 'gemini') {
       const response = await this.fetchGeminiChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'openrouter') {
+    if (useInternet && effective === 'openrouter') {
       const response = await this.fetchOpenRouterChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'groq') {
+    if (useInternet && effective === 'groq') {
       const response = await this.fetchGroqChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'cohere') {
+    if (useInternet && effective === 'cohere') {
       const response = await this.fetchCohereChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'together') {
+    if (useInternet && effective === 'together') {
       const response = await this.fetchTogetherChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'cerebras') {
+    if (useInternet && effective === 'cerebras') {
       const response = await this.fetchCerebrasChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
     }
 
-    if (this.useInternet && this.provider === 'huggingface') {
+    if (useInternet && effective === 'huggingface') {
       const response = await this.fetchHuggingFaceChat(messages, useModel);
       this.emitChunks(response, onToken);
       return response;
@@ -984,11 +1084,16 @@ export class OllamaClient {
 
   /** Obtener si el modo internet está activo */
   isInternetEnabled(): boolean {
-    return this.useInternet;
+    return this.isEffectiveInternetMode();
   }
 
-  /** Obtener el proveedor actual */
+  /** Obtener el proveedor configurado por el usuario */
   getProvider(): ProviderName {
     return this.provider;
+  }
+
+  /** Obtener el proveedor efectivo tras resolver el modo Auto */
+  getResolvedProvider(): ProviderName {
+    return this.getEffectiveProvider();
   }
 }

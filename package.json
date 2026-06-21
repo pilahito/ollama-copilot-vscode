@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot de código gratuito que usa tus IAs locales (Ollama) para autocompletado, chat y reparación autónoma de código.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -162,8 +162,9 @@
       "properties": {
         "local.provider": {
           "type": "string",
-          "enum": ["ollama", "duckduckgo", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
+          "enum": ["auto", "ollama", "duckduckgo", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
           "enumDescriptions": [
+            "Auto - Ollama si está instalado, si no DuckDuckGo en tu navegador",
             "Ollama - IA local (gratis, sin internet)",
             "DuckDuckGo AI - GRATIS sin API key (usa GPT-4o-mini)",
             "Gemini - Google AI (gratis con límites)",
@@ -174,13 +175,18 @@
             "Cerebras - Velocidad récord (gratis con API key)",
             "HuggingFace - Modelos open source (gratis con API key)"
           ],
-          "default": "ollama",
+          "default": "auto",
           "description": "Proveedor de IA para el chat y reparación de código."
+        },
+        "local.browserName": {
+          "type": "string",
+          "default": "",
+          "description": "Nombre del navegador predeterminado (vacío = detectar automáticamente: Brave, Firefox, Chrome…)."
         },
         "local.useInternet": {
           "type": "boolean",
           "default": false,
-          "description": "Si está activado, la extensión prioriza proveedores remotos con internet. Si está desactivado, usa Ollama local."
+          "description": "Si está activado, la extensión prioriza proveedores remotos con internet. El modo Auto lo gestiona solo."
         },
         "local.ollamaUrl": {
           "type": "string",

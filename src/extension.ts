@@ -74,8 +74,10 @@ export function activate(context: vscode.ExtensionContext): void {
   refreshStatusBar();
   const interval = setInterval(refreshStatusBar, POLLING_INTERVAL_MS);
 
-  // Auto-detect best model from installed (using ollama list) and apply
-  ollama.autoSelectBestModels().then(() => {
+  // Auto: Ollama si hay modelos, si no DuckDuckGo en el navegador del usuario
+  ollama.resolveAutoProvider().then(() => {
+    return ollama.autoSelectBestModels();
+  }).then(() => {
     void refreshStatusBar();
   }).catch(() => {});
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
