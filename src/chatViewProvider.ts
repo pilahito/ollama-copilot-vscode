@@ -84,7 +84,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         );
         this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
-        this.post({ type: 'connectionStatus', ...status });
+        const useInternet = this.ollama.isInternetEnabled();
+        this.post({ type: 'connectionStatus', ...status, internetEnabled: useInternet });
       } else if (message.type === 'setInternetMode') {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('useInternet', message.useInternet, vscode.ConfigurationTarget.Global);
@@ -94,20 +95,22 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         
         this.ollama.refreshConfig();
         const status = await this.ollama.checkConnection();
-        // Añadir indicador de modo internet
         this.post({ 
           type: 'connectionStatus', 
           ...status,
           internetEnabled: message.useInternet 
         });
       } else if (message.type === 'getOllamaModels') {
-        const status = await this.ollama.checkConnection();
         const config = vscode.workspace.getConfiguration('local');
         const current = config.get('chatModel', '') || config.get('completionModel', '');
-        if (status.ok && status.models && status.models.length > 0) {
-          this.post({ type: 'ollamaModels', models: status.models, currentModel: current });
+        // Siempre obtener las instaladas localmente, aunque el proveedor actual sea internet
+        const installed = await this.ollama.getInstalledOllamaModels();
+        if (installed.length > 0) {
+          this.post({ type: 'ollamaModels', models: installed, currentModel: current });
         } else {
-          this.post({ type: 'ollamaModels', models: [], currentModel: '' });
+          // Fallback a checkConnection
+          const status = await this.ollama.checkConnection();
+          this.post({ type: 'ollamaModels', models: status.models || [], currentModel: current });
         }
       } else if (message.type === 'setModel') {
         const config = vscode.workspace.getConfiguration('local');
@@ -121,20 +124,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Comprueba la conexión nada más abrir la vista.
+    // Comprueba la conexión nada más abrir la vista y detecta modelos instalados
     this.ollama.checkConnection().then((status) => {
-      this.post({ type: 'connectionStatus', ...status });
-      if (status.ok && status.provider === 'ollama') {
-        // Auto cargar modelos para el selector
-        this.post({ type: 'getOllamaModels' });  // will be handled but we send again? Wait, better direct
-        // Actually send models directly
-        if (status.models && status.models.length > 0) {
-          const config = vscode.workspace.getConfiguration('local');
-          const current = config.get('chatModel', '') || config.get('completionModel', '');
-          this.post({ type: 'ollamaModels', models: status.models, currentModel: current });
-        }
-      }
+      const useInternet = this.ollama.isInternetEnabled();
+      this.post({ type: 'connectionStatus', ...status, internetEnabled: useInternet });
     });
+    
+    // Siempre detectar IAs instaladas al cargar (independiente del proveedor)
+    vscode.postMessage({ type: 'getOllamaModels' });
   }
 
   // ── API pública ───────────────────────────────────────────────────────────────
@@ -1350,46 +1347,52 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     promptEl.focus();
   }
 
+  let lastInstalledModels = [];
+
   function showRecommendations() {
     const modal = document.getElementById('modal-overlay');
     const body = document.getElementById('modal-body');
     modal.classList.add('show');
     
-    // Detectar RAM aproximada
+    // Pedir modelos instalados reales (si Ollama está activo)
+    vscode.postMessage({ type: 'getOllamaModels' });
+    
+    // Detección de hardware más conservadora
     const ram = navigator.deviceMemory || 8;
     const cores = navigator.hardwareConcurrency || 4;
     
     let category, models;
     
-    if (ram <= 4) {
-      category = '🟢 PC Básico (4GB RAM)';
+    // Recomendaciones mucho más realistas y "decentes" para PCs normales
+    if (ram <= 6) {
+      category = '🟢 PC Básico / Portátil (' + ram + 'GB RAM)';
       models = [
-        { name: 'tinyllama:1.1b', size: '637MB', ram: '2GB', speed: '⚡⚡⚡⚡⚡', recommended: false },
-        { name: 'phi3:mini', size: '2.2GB', ram: '4GB', speed: '⚡⚡⚡⚡', recommended: true },
-        { name: 'gemma:2b', size: '1.7GB', ram: '4GB', speed: '⚡⚡⚡⚡', recommended: false },
+        { name: 'qwen2.5-coder:1.5b', size: '1.1GB', ram: '~3GB', speed: '⚡⚡⚡⚡⚡', recommended: true },
+        { name: 'phi3:mini', size: '2.2GB', ram: '~4GB', speed: '⚡⚡⚡⚡', recommended: true },
+        { name: 'gemma2:2b', size: '1.6GB', ram: '~4GB', speed: '⚡⚡⚡⚡', recommended: false },
       ];
-    } else if (ram <= 8) {
-      category = '🟡 PC Medio (8GB RAM)';
+    } else if (ram <= 12) {
+      category = '🟡 PC Normal (' + ram + 'GB RAM)';
       models = [
-        { name: 'llama3.2:3b', size: '2.0GB', ram: '6GB', speed: '⚡⚡⚡⚡', recommended: true },
-        { name: 'mistral:7b', size: '4.1GB', ram: '8GB', speed: '⚡⚡⚡', recommended: true },
-        { name: 'codellama:7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', recommended: false },
-        { name: 'deepseek-coder:6.7b', size: '3.8GB', ram: '8GB', speed: '⚡⚡⚡', recommended: false },
+        { name: 'qwen2.5-coder:3b', size: '2.0GB', ram: '~5-6GB', speed: '⚡⚡⚡⚡', recommended: true },
+        { name: 'llama3.2:3b', size: '2.0GB', ram: '~6GB', speed: '⚡⚡⚡⚡', recommended: true },
+        { name: 'deepseek-coder:6.7b', size: '3.8GB', ram: '~8GB', speed: '⚡⚡⚡', recommended: false },
+        { name: 'qwen2.5-coder:7b', size: '4.7GB', ram: '~9-10GB', speed: '⚡⚡⚡', recommended: false },
       ];
-    } else if (ram <= 16) {
-      category = '🔴 PC Potente (16GB RAM)';
+    } else if (ram <= 20) {
+      category = '🟠 PC Buena (' + ram + 'GB RAM)';
       models = [
-        { name: 'llama3.1:8b', size: '4.7GB', ram: '10GB', speed: '⚡⚡⚡', recommended: true },
-        { name: 'codellama:13b', size: '7.4GB', ram: '16GB', speed: '⚡⚡', recommended: false },
-        { name: 'phi3:medium', size: '7.9GB', ram: '12GB', speed: '⚡⚡', recommended: false },
-        { name: 'mixtral:8x7b', size: '26GB', ram: '32GB', speed: '⚡', recommended: false },
+        { name: 'qwen2.5-coder:7b', size: '4.7GB', ram: '~9-10GB', speed: '⚡⚡⚡', recommended: true },
+        { name: 'llama3.1:8b', size: '4.7GB', ram: '~10GB', speed: '⚡⚡⚡', recommended: true },
+        { name: 'deepseek-coder:6.7b', size: '3.8GB', ram: '~8GB', speed: '⚡⚡⚡', recommended: false },
+        { name: 'codellama:13b', size: '7.4GB', ram: '~14-16GB', speed: '⚡⚡', recommended: false },
       ];
     } else {
-      category = '🟣 Workstation (32GB+ RAM)';
+      category = '🔵 PC Potente (' + ram + 'GB RAM)';
       models = [
-        { name: 'llama3.1:70b', size: '40GB', ram: '48GB', speed: '⚡', recommended: true },
-        { name: 'codellama:70b', size: '40GB', ram: '48GB', speed: '⚡', recommended: false },
-        { name: 'qwen2:72b', size: '41GB', ram: '48GB', speed: '⚡', recommended: false },
+        { name: 'qwen2.5-coder:14b', size: '9GB', ram: '~16-18GB', speed: '⚡⚡', recommended: true },
+        { name: 'llama3.1:8b', size: '4.7GB', ram: '~10GB', speed: '⚡⚡⚡', recommended: true },
+        { name: 'qwen2.5-coder:7b', size: '4.7GB', ram: '~10GB', speed: '⚡⚡⚡', recommended: false },
       ];
     }
     
@@ -1411,15 +1414,41 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       html += '<code>ollama pull ' + m.name + '</code>';
       html += '</div>';
     });
+
+    // Mostrar modelos instalados reales si los tenemos (detectados de ollama list)
+    if (lastInstalledModels && lastInstalledModels.length > 0) {
+      html += '<h4 class="category-title" style="margin-top:12px;">✅ Tus IAs instaladas (detectadas con ollama list):</h4>';
+      lastInstalledModels.forEach(name => {
+        html += '<div class="model-card"><code>' + name + '</code> <small>(instalado)</small></div>';
+      });
+    }
     
     html += '<div style="margin-top:16px;padding:12px;background:rgba(59,130,246,0.1);border-radius:8px;">';
     html += '<strong>💡 Consejos:</strong><br>';
     html += '<small>• Cierra apps pesadas antes de usar la IA<br>';
-    html += '• Los modelos :latest son los más optimizados<br>';
+    html += '• Usa modelos pequeños (3b-7b) si tu PC es normal<br>';
     html += '• GPU NVIDIA acelera mucho la generación</small>';
     html += '</div>';
     
     body.innerHTML = html;
+  }
+
+  function updateRecommendationsWithInstalled(installedModels) {
+    const body = document.getElementById('modal-body');
+    if (!body || !installedModels || installedModels.length === 0) return;
+
+    // Si ya hay contenido de recomendaciones, agregar sección de instalados arriba
+    let installedHTML = '<div style="margin-bottom:16px;padding:12px;background:rgba(16,185,129,0.1);border-radius:8px;">';
+    installedHTML += '<strong>✅ Tus IAs instaladas actualmente:</strong><br>';
+    installedHTML += '<small>Puedes usar estas directamente sin descargar nada.</small>';
+    installedHTML += '<div style="margin-top:8px;">';
+    installedModels.forEach(function(m) {
+      installedHTML += '<code style="margin-right:6px;display:inline-block;padding:2px 6px;background:#052e16;border-radius:4px;">' + m + '</code>';
+    });
+    installedHTML += '</div></div>';
+    
+    // Insertar al principio del modal
+    body.innerHTML = installedHTML + body.innerHTML;
   }
 
   function closeModal() {
@@ -1463,13 +1492,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   function setProvider(provider) {
     vscode.postMessage({ type: 'setProvider', provider });
     
-    // Mostrar/ocultar selector de modelos Ollama
+    // Show model selector for Ollama or any remote provider (internet)
     const ollamaRow = document.getElementById('ollama-models-row');
-    if (provider === 'ollama' && ollamaRow) {
-      ollamaRow.style.display = 'flex';
-      vscode.postMessage({ type: 'getOllamaModels' });
-    } else if (ollamaRow) {
-      ollamaRow.style.display = 'none';
+    if (ollamaRow) {
+      if (provider === 'ollama' || !!provider) {
+        ollamaRow.style.display = 'flex';
+        if (provider === 'ollama') {
+          vscode.postMessage({ type: 'getOllamaModels' });
+        }
+      } else {
+        ollamaRow.style.display = 'none';
+      }
     }
   }
 
@@ -1515,7 +1548,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     switch (msg.type) {
       case 'connectionStatus': {
         const provider = msg.provider || 'ollama';
-        const useInternet = provider !== 'ollama';
+        const useInternet = msg.internetEnabled !== undefined ? !!msg.internetEnabled : (provider !== 'ollama');
         providerEl.value = provider;
         internetEl.value = String(useInternet);
         
@@ -1536,6 +1569,42 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           statusText.textContent = (labels[provider] || provider) + ' ✓';
         } else {
           statusText.textContent = 'Desconectado';
+        }
+
+        // Show the model selector row for Ollama AND for internet providers
+        // so the user can see / change the specific model they want to use with internet
+        const ollamaRow = document.getElementById('ollama-models-row');
+        if (ollamaRow) {
+          if (provider === 'ollama' || !!provider) {
+            ollamaRow.style.display = 'flex';
+            if (provider === 'ollama') {
+              vscode.postMessage({ type: 'getOllamaModels' });
+            } else {
+              // For remote/internet providers, prefill the current model from config
+              // so user can edit the model name (e.g. llama-3.3-70b for Groq)
+              const config = vscode.workspace.getConfiguration('local');
+              const current = config.get('chatModel', '') || config.get('completionModel', '');
+              const select = document.getElementById('ollama-model-select');
+              if (select) {
+                select.innerHTML = '';
+                const val = current || (provider === 'duckduckgo' ? 'gpt-4o-mini' : '');
+                if (val) {
+                  const opt = document.createElement('option');
+                  opt.value = val;
+                  opt.textContent = val;
+                  opt.selected = true;
+                  select.appendChild(opt);
+                } else {
+                  const opt = document.createElement('option');
+                  opt.value = '';
+                  opt.textContent = 'Escribe el modelo (ej: llama-3.3-70b-versatile)';
+                  select.appendChild(opt);
+                }
+              }
+            }
+          } else {
+            ollamaRow.style.display = 'none';
+          }
         }
         break;
       }
@@ -1575,6 +1644,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'ollamaModels':
+        lastInstalledModels = msg.models || [];
+        
         const select = document.getElementById('ollama-model-select');
         if (select) {
           select.innerHTML = '';
@@ -1591,7 +1662,6 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
               select.appendChild(opt);
             });
             if (!foundCurrent && msg.currentModel) {
-              // If current not in list yet, add it as selected
               const opt = document.createElement('option');
               opt.value = msg.currentModel;
               opt.textContent = msg.currentModel + ' (actual)';
@@ -1604,6 +1674,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
             opt.textContent = 'No hay modelos detectados';
             select.appendChild(opt);
           }
+        }
+
+        // Si el modal de recomendaciones está abierto, actualízalo con los modelos reales instalados
+        const modal = document.getElementById('modal-overlay');
+        if (modal && modal.classList.contains('show') && lastInstalledModels.length > 0) {
+          updateRecommendationsWithInstalled(lastInstalledModels);
         }
         break;
     }

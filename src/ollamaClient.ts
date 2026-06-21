@@ -133,6 +133,16 @@ export class OllamaClient {
   async checkConnection(): Promise<OllamaConnectionResult> {
     this.refreshConfig();
 
+    // Siempre detectar las IAs instaladas localmente con Ollama, aunque uses proveedor internet
+    let installedOllamaModels: string[] = [];
+    try {
+      const data = await this.httpGet('/api/tags');
+      const parsed = JSON.parse(data);
+      installedOllamaModels = (parsed.models ?? []).map((m: { name: string }) => m.name);
+    } catch {
+      // Ollama no disponible
+    }
+
     if (this.useInternet) {
       // DuckDuckGo AI - GRATIS sin API key
       if (this.provider === 'duckduckgo') {
@@ -265,6 +275,17 @@ export class OllamaClient {
         provider: 'ollama',
         message: 'No se detecta Ollama en localhost:11434.'
       };
+    }
+  }
+
+  // Nuevo: detectar siempre las IAs instaladas localmente, incluso si usas proveedor remoto
+  async getInstalledOllamaModels(): Promise<string[]> {
+    try {
+      const data = await this.httpGet('/api/tags');
+      const parsed = JSON.parse(data);
+      return (parsed.models ?? []).map((m: { name: string }) => m.name);
+    } catch {
+      return [];
     }
   }
 
