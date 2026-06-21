@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot de código gratuito que usa tus IAs locales (Ollama) para autocompletado, chat y reparación autónoma de código.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -37,6 +37,9 @@
   "categories": ["Programming Languages", "Machine Learning", "Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",
+  "extensionDependencies": [
+    "vscode.github-authentication"
+  ],
   "contributes": {
     "commands": [
       {

@@ -251,10 +251,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Ver mis repositorios
     vscode.commands.registerCommand('local.githubRepos', async () => {
-      const session = await github.getSession();
-      if (!session) {
-        const login = await github.login();
-        if (!login) { return; }
+      if (!(await github.ensureAuthenticated())) {
+        return;
       }
 
       const repos = await github.listRepos();
