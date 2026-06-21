@@ -96,7 +96,8 @@ export class LocalAgent {
    */
   async handleRequest(
     userPrompt:  string,
-    onProgress:  (msg: string) => void
+    onProgress:  (msg: string) => void,
+    model?: string
   ): Promise<AgentResult> {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders?.length) {
@@ -189,7 +190,7 @@ export class LocalAgent {
       `que necesitas leer para resolver la petición, una por línea, sin explicaciones ni markdown. ` +
       `Si necesitas crear un archivo nuevo que no existe, no lo incluyas aquí.`;
 
-    const response = await this.ollama.generateCompletion(prompt);
+    const response = await this.ollama.generateCompletion(prompt, model);
     const lines    = response
       .split('\n')
       .map(l => l.trim())
@@ -292,7 +293,8 @@ export class LocalAgent {
         { role: 'system', content: systemPrompt },
         { role: 'user',   content: userMessage  }
       ],
-      (token) => { fullResponse += token; }
+      (token) => { fullResponse += token; },
+      model
     );
 
     return this.parseAgentResponse(fullResponse);

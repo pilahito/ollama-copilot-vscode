@@ -70,6 +70,14 @@
         "title": "Local: Abrir terminal automática (SSH/Auto)"
       },
       {
+        "command": "local.useInternetProvider",
+        "title": "Local: Usar IA con internet (DuckDuckGo gratis)"
+      },
+      {
+        "command": "local.selectModel",
+        "title": "Local: Elegir modelo de IA (de los detectados)"
+      },
+      {
         "command": "local.githubLogin",
         "title": "Local: Conectar con GitHub",
         "icon": "$(github)"
@@ -125,7 +133,9 @@
         { "command": "local.githubClone" },
         { "command": "local.githubRepos" },
         { "command": "local.analyzeProject" },
-        { "command": "local.openAutoTerminal" }
+        { "command": "local.openAutoTerminal" },
+        { "command": "local.useInternetProvider" },
+        { "command": "local.selectModel" }
       ]
     },
     "viewsContainers": {

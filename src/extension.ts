@@ -46,16 +46,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
   async function refreshStatusBar(): Promise<void> {
     const status = await ollama.checkConnection();
+    const config = vscode.workspace.getConfiguration('local');
+    const currComp = config.get<string>('completionModel', '');
+    const currChat = config.get<string>('chatModel', '');
 
     if (status.ok) {
-      const modelList = status.models.join(', ') || 'ninguno descargado';
-      statusBarItem.text              = `$(check) Local: IA local activa`;
-      statusBarItem.tooltip           = `Ollama conectado. Modelos: ${modelList}`;
+      const modelList = status.models.length > 0 ? status.models.join(', ') : 'ninguno descargado';
+      statusBarItem.text              = `$(check) Local Copilot`;
+      statusBarItem.tooltip           = `IA local activa.\nModelos: ${modelList}\n\nAutocompletado: ${currComp || 'no seleccionado'}\nChat: ${currChat || 'no seleccionado'}\n\nClic: ver modelos\nComando: Local: Elegir modelo de IA`;
       statusBarItem.backgroundColor   = undefined;
+      statusBarItem.command = 'local.checkConnection';
     } else {
-      statusBarItem.text            = `$(warning) Local: sin IA local`;
-      statusBarItem.tooltip         = 'No se detecta Ollama. Ejecuta "ollama serve" en tu terminal.';
+      statusBarItem.text            = `$(warning) Local Copilot`;
+      statusBarItem.tooltip         = 'No se detecta Ollama. Ejecuta "ollama serve" en tu terminal.\n\nClic para comprobar.';
       statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+      statusBarItem.command = 'local.checkConnection';
     }
 
     statusBarItem.show();
@@ -107,13 +112,21 @@ export function activate(context: vscode.ExtensionContext): void {
       if (status.ok) {
         const modelList = status.models.join(', ')
           || `ninguno — descarga uno con "ollama pull ${RECOMMENDED_MODEL}"`;
-        vscode.window.showInformationMessage(
-          `✓ Local: Ollama conectado. Modelos disponibles: ${modelList}`
+        const pick = await vscode.window.showInformationMessage(
+          `✓ Local: Ollama conectado. Modelos: ${modelList}`,
+          'Elegir modelo para programar'
         );
+        if (pick === 'Elegir modelo para programar') {
+          await vscode.commands.executeCommand('local.selectModel');
+        }
       } else {
-        vscode.window.showWarningMessage(
-          '⚠ Local: no se detecta Ollama en localhost:11434. Instálalo y ejecuta "ollama serve".'
+        const msg = await vscode.window.showWarningMessage(
+          '⚠ Local: no se detecta Ollama en localhost:11434. Instálalo y ejecuta "ollama serve".',
+          'Abrir terminal'
         );
+        if (msg === 'Abrir terminal') {
+          vscode.commands.executeCommand('workbench.action.terminal.new');
+        }
       }
     }),
 
@@ -246,6 +259,63 @@ export function activate(context: vscode.ExtensionContext): void {
       if (selected) {
         vscode.env.openExternal(vscode.Uri.parse(selected.repo.html_url));
       }
+    }),
+
+    // Usar proveedor con acceso a internet fácil (DuckDuckGo gratis, sin clave)
+    vscode.commands.registerCommand('local.useInternetProvider', async () => {
+      const config = vscode.workspace.getConfiguration('local');
+      await config.update('provider', 'duckduckgo', vscode.ConfigurationTarget.Global);
+      await config.update('useInternet', true, vscode.ConfigurationTarget.Global);
+      ollama.refreshConfig();
+      vscode.window.showInformationMessage('✓ Usando DuckDuckGo AI (internet gratis, sin clave). El agente y chat ahora usan internet.');
+      await refreshStatusBar();
+    }),
+
+    // Elegir IA / modelo detectado para programar (autocompletado y chat)
+    vscode.commands.registerCommand('local.selectModel', async () => {
+      const status = await ollama.checkConnection();
+      if (!status.ok || !status.models || status.models.length === 0) {
+        vscode.window.showWarningMessage('No se detectaron modelos de IA. Ejecuta "ollama serve" y "ollama pull qwen2.5-coder:7b"');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('local');
+      const currentCompletion = config.get<string>('completionModel', '');
+      const currentChat = config.get<string>('chatModel', '');
+
+      const items = status.models.map(model => ({
+        label: model,
+        description: model === currentCompletion || model === currentChat ? '✓ actual' : '',
+        picked: model === currentCompletion || model === currentChat
+      }));
+
+      const pick = await vscode.window.showQuickPick(items, {
+        placeHolder: `Modelos detectados (${status.models.length}). Elige uno`,
+        canPickMany: false
+      });
+      if (!pick) return;
+
+      const selectedModel = pick.label;
+
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: 'Ambos (recomendado)', detail: `Usar ${selectedModel} para autocompletado + chat` },
+          { label: 'Solo Autocompletado', detail: 'Para sugerencias inline mientras programas' },
+          { label: 'Solo Chat / Agente', detail: 'Para el panel lateral y reparación de código' }
+        ],
+        { placeHolder: `¿Para qué usar "${selectedModel}"?` }
+      );
+      if (!choice) return;
+
+      if (choice.label.includes('Ambos') || choice.label.includes('Autocompletado')) {
+        await config.update('completionModel', selectedModel, vscode.ConfigurationTarget.Global);
+      }
+      if (choice.label.includes('Ambos') || choice.label.includes('Chat')) {
+        await config.update('chatModel', selectedModel, vscode.ConfigurationTarget.Global);
+      }
+
+      vscode.window.showInformationMessage(`✓ Modelo IA actualizado: ${selectedModel}`);
+      await refreshStatusBar();
     })
 
   );

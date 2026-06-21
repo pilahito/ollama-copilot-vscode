@@ -77,11 +77,13 @@ export class GitHubService {
     }
 
     try {
-      this.session = await vscode.authentication.getSession('github', ['repo', 'user'], {
+      const sess = await vscode.authentication.getSession('github', ['repo', 'user'], {
         createIfNone: false
       });
+      this.session = sess ?? null;
       return this.session;
     } catch {
+      this.session = null;
       return null;
     }
   }
