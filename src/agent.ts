@@ -76,6 +76,7 @@ const IGNORE_DIRS = new Set([
 const KNOWN_FILENAMES = new Set([
   'package.json', 'tsconfig.json', 'Dockerfile', 'Makefile', 'README.md',
   '.gitignore', '.env.example', 'index.js', 'index.ts', 'main.py', 'app.py',
+  '.gitkeep', '.keep',
 ]);
 
 const PATH_HINT_RE = /(?:^|[/\\])(?:src|lib|server|bot|api)[/\\][\w./-]+\.\w{1,8}$/i;
@@ -103,6 +104,8 @@ interface ProjectProfile {
   hint:        string;
   /** Archivo nuevo que Ollama debe CREAR (ej. chatbot.js). */
   moduleToCreate?: string;
+  /** Carpetas que el usuario pidió crear (ej. multimedia). */
+  foldersToCreate?: string[];
 }
 
 /** Entorno local y SSH configurado en VS Code. */
@@ -191,14 +194,20 @@ export class LocalAgent {
         return result;
       }
 
-      if (result.actions.length > 0) {
-        onProgress(`✏️ Aplicando ${result.actions.length} cambio(s) en el proyecto...`);
-        await this.applyActions(result.actions, rootPath);
-      }
-
       if (result.commands.length > 0) {
         onProgress(`🖥️ Ejecutando ${result.commands.length} comando(s) en terminal...`);
         await this.executeCommands(result.commands, rootPath, onProgress);
+      }
+
+      if (result.actions.length > 0) {
+        const normalized = await this.normalizeActionTypes(result.actions, rootPath);
+        onProgress(`✏️ Aplicando ${normalized.length} cambio(s) en el proyecto...`);
+        for (const action of normalized) {
+          const icon = action.type === 'create' ? '🆕' : action.type === 'delete' ? '🗑️' : '✏️';
+          onProgress(`${icon} ${action.filePath}`);
+        }
+        await this.applyActions(normalized, rootPath);
+        await this.verifyAppliedActions(normalized, rootPath, onProgress);
       }
     } else if (this.looksLikeImplementationTask(userPrompt) || this.looksLikeRemoteTask(userPrompt)) {
       const mainFile = entryPoints[0]
@@ -368,11 +377,19 @@ export class LocalAgent {
     }
     let moduleToCreate: string | undefined;
 
+    const foldersToCreate = this.extractRequestedFolders(userPrompt);
+
     if (this.wantsNewModuleFile(userPrompt)) {
       moduleToCreate = 'chatbot.js';
       hint =
         `OBLIGATORIO para Ollama: 1) ACCION: CREAR | RUTA: chatbot.js | 2) ACCION: MODIFICAR | RUTA: ${primaryEntry} ` +
         `con require("./chatbot"). Dos bloques ACCION con <<CONTENIDO>> completo.`;
+    } else if (foldersToCreate.length > 0) {
+      const folderList = foldersToCreate.map((f) => `${f}/.gitkeep`).join(', ');
+      hint +=
+        ` OBLIGATORIO carpeta(s): ACCION: CREAR | RUTA: ${folderList} | MOTIVO: carpeta solicitada ` +
+        `(<<CONTENIDO>> vacío o "# carpeta") Y MODIFICAR ${primaryEntry} para usar path.join(__dirname, "${foldersToCreate[0]}"). ` +
+        `NO uses rutas absolutas /home/...`;
     } else if (/\b(chatbot|chat\s*bot|palabras?\s*clave|respuestas?\s*autom[aá]ticas?)\b/i.test(userPrompt)) {
       hint += ' Añade respuestas por palabras clave (en chatbot.js o en el handler MessageCreate).';
     } else if (/\b(mejora|mejorar|arregla|fix)\b/i.test(userPrompt)) {
@@ -382,7 +399,77 @@ export class LocalAgent {
       hint += ' Para servidores/SSH usa COMANDO (diagnóstico) y ACCION en .sh/.conf/.service/.yml si toca configs.';
     }
 
-    return { type, primaryEntry, stack, hint, moduleToCreate };
+    return { type, primaryEntry, stack, hint, moduleToCreate, foldersToCreate };
+  }
+
+  /** Extrae nombres de carpetas pedidas en lenguaje natural. */
+  private extractRequestedFolders(prompt: string): string[] {
+    const found = new Set<string>();
+    const skip = new Set(['la', 'el', 'una', 'un', 'para', 'de', 'del', 'los', 'las']);
+
+    const patterns = [
+      /\b(?:crea(?:r)?|genera(?:r)?)\s+(?:la\s+|una\s+|el\s+)?(?:carpeta|caperta|directorio|folder)\s+["']?([\w.-]+)["']?/gi,
+      /\b(?:carpeta|caperta|directorio|folder)\s+(?:llamada\s+|de\s+|para\s+)?["']?([\w.-]+)["']?/gi,
+      /\b(?:en\s+la\s+)?(?:carpeta|caperta)\s+["']?([\w.-]+)["']?/gi,
+    ];
+
+    for (const re of patterns) {
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(prompt)) !== null) {
+        const name = match[1]?.trim().toLowerCase();
+        if (name && /^[\w.-]+$/.test(name) && !skip.has(name)) {
+          found.add(name);
+        }
+      }
+    }
+
+    return [...found];
+  }
+
+  /** Quita fences ``` que Ollama a veces mete dentro de <<CONTENIDO>>. */
+  private stripMarkdownFromContent(content: string): string {
+    let c = content.trim();
+    const wrapped = c.match(/^```[\w]*\s*\n([\s\S]*?)\n```\s*$/);
+    if (wrapped) {
+      c = wrapped[1].trim();
+    } else if (c.startsWith('```')) {
+      c = c.replace(/^```[\w]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+    }
+    return c;
+  }
+
+  /** Si el usuario pidió carpetas y el modelo no las creó, inyecta .gitkeep. */
+  private injectFolderCreateActions(
+    actions: FileAction[],
+    userPrompt: string
+  ): FileAction[] {
+    const folders = this.extractRequestedFolders(userPrompt);
+    if (folders.length === 0) {
+      return actions;
+    }
+
+    const result = [...actions];
+    const covered = new Set(
+      result.map((a) => a.filePath.replace(/\\/g, '/').toLowerCase())
+    );
+
+    for (const folder of folders) {
+      const gitkeep = `${folder}/.gitkeep`;
+      const hasFolderFile = [...covered].some(
+        (p) => p.startsWith(`${folder}/`) || p === folder
+      );
+      if (!hasFolderFile) {
+        result.unshift({
+          type:     'create',
+          filePath: gitkeep,
+          content:  '# Carpeta creada por Local Copilot\n',
+          reason:   `Carpeta "${folder}" solicitada (auto-inyectada)`,
+        });
+        covered.add(gitkeep);
+      }
+    }
+
+    return result;
   }
 
   /** El usuario pide un archivo/módulo nuevo (chatbot.js, etc.). */
@@ -550,7 +637,12 @@ export class LocalAgent {
       `❌ PROHIBIDO: .md .txt archivos sin extensión frases en español como nombre\n` +
       `❌ PROHIBIDO: crear "documentación", "instrucciones" o duplicar index.js con otro nombre\n` +
       `❌ PROHIBIDO: responder solo con listas 1. 2. 3. sin bloque ACCION\n` +
-      `❌ PROHIBIDO: poner código solo en EXPLICACION — el código va en <<CONTENIDO>>\n\n` +
+      `❌ PROHIBIDO: poner código solo en EXPLICACION — el código va en <<CONTENIDO>>\n` +
+      `❌ PROHIBIDO: envolver <<CONTENIDO>> en \`\`\`javascript — solo código puro dentro\n` +
+      `❌ PROHIBIDO: rutas absolutas /home/usuario/... — usa path.join(__dirname, "carpeta")\n\n` +
+      `═══ EJEMPLO CORRECTO (carpeta multimedia) ═══\n` +
+      `ACCION: CREAR | RUTA: multimedia/.gitkeep | MOTIVO: carpeta multimedia\n<<CONTENIDO>>\n# multimedia\n<<FIN>>\n` +
+      `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: comando listmultimedia\n<<CONTENIDO>>\n(código COMPLETO con path.join)\n<<FIN>>\n\n` +
       `═══ EJEMPLO CORRECTO (un archivo) ═══\n` +
       `Petición: "agrega cosas al bot"\n` +
       `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: mejoras\n<<CONTENIDO>>\n(código COMPLETO)\n<<FIN>>\n\n` +
@@ -602,6 +694,13 @@ export class LocalAgent {
       return (
         `Ollama debe CREAR "${profile.moduleToCreate}" y MODIFICAR "${profile.primaryEntry}". ` +
         `Dos bloques ACCION con <<CONTENIDO>> completo. La extensión aplicará los cambios — no digas al usuario que lo haga.`
+      );
+    }
+    if (profile.foldersToCreate?.length) {
+      const f = profile.foldersToCreate[0];
+      return (
+        `Ollama debe CREAR "${f}/.gitkeep" y MODIFICAR "${profile.primaryEntry}" con path.join(__dirname, "${f}"). ` +
+        `Dos bloques ACCION mínimo. Sin \`\`\` dentro de <<CONTENIDO>>.`
       );
     }
     return (
@@ -677,6 +776,9 @@ export class LocalAgent {
       ];
 
       if (attempt === 1) {
+        const folderHint = profile.foldersToCreate?.length
+          ? `CREAR ${profile.foldersToCreate[0]}/.gitkeep + MODIFICAR ${profile.primaryEntry}. `
+          : '';
         const retryHint = taskMode === 'remote'
           ? `CORRECCIÓN: emite COMANDO(s) de diagnóstico` +
             (env.sshTarget ? ` con ssh a ${env.sshTarget}` : '') +
@@ -684,11 +786,14 @@ export class LocalAgent {
           : profile.moduleToCreate
             ? `CORRECCIÓN Ollama: CREAR ${profile.moduleToCreate} + MODIFICAR ${profile.primaryEntry}. ` +
               `Dos ACCION con <<CONTENIDO>> completo. Sin explicar pasos al usuario.`
-            : `CORRECCIÓN Ollama: ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | ` +
-              `<<CONTENIDO>> con código COMPLETO. La extensión lo guarda en disco.`;
+            : `CORRECCIÓN Ollama: ${folderHint}ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | ` +
+              `<<CONTENIDO>> con código COMPLETO (sin \`\`\`). La extensión lo guarda en disco.`;
         messages.push({ role: 'user', content: retryHint });
       } else if (attempt === 2) {
         const sshPrefix = this.formatSshInvoke(env);
+        const folderBlock = profile.foldersToCreate?.length
+          ? `ACCION: CREAR | RUTA: ${profile.foldersToCreate[0]}/.gitkeep | MOTIVO: carpeta\n<<CONTENIDO>>\n# carpeta\n<<FIN>>\n\n`
+          : '';
         const template = taskMode === 'remote'
           ? `EXPLICACION:\nDiagnóstico del servidor.\n\n` +
             `COMANDO: ${sshPrefix ? `${sshPrefix} "uptime && df -h && free -m"` : 'uptime && df -h && free -m'} | MOTIVO: supervisión\n<<FIN>>\n`
@@ -697,6 +802,7 @@ export class LocalAgent {
               `ACCION: CREAR | RUTA: ${profile.moduleToCreate} | MOTIVO: chatbot\n<<CONTENIDO>>\n\n<<FIN>>\n\n` +
               `ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | MOTIVO: conectar\n<<CONTENIDO>>\n\n<<FIN>>\n`
             : `EXPLICACION:\nImplementado.\n\n` +
+              folderBlock +
               `ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | MOTIVO: petición\n<<CONTENIDO>>\n`;
         messages.push({ role: 'user', content: `ÚLTIMO INTENTO Ollama — rellena con código real:\n\n${template}` });
       }
@@ -714,8 +820,12 @@ export class LocalAgent {
       const hasWork = lastResult.actions.length > 0 || lastResult.commands.length > 0;
       const moduleOk = !profile.moduleToCreate ||
         lastResult.actions.some((a) => a.filePath.includes(profile.moduleToCreate!));
+      const foldersOk = this.foldersCovered(
+        lastResult.actions,
+        profile.foldersToCreate ?? []
+      );
 
-      if ((hasWork && moduleOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
+      if ((hasWork && moduleOk && foldersOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
         return lastResult;
       }
     }
@@ -751,10 +861,14 @@ export class LocalAgent {
       actions.push(...this.parseOrphanCodeBlocks(raw, entryPoints, rootPath, userPrompt));
     }
 
+    const sanitized = this.sanitizeFileActions(actions, userPrompt, entryPoints, rootPath);
+    const withFolders = this.injectFolderCreateActions(sanitized, userPrompt);
+    const withCommands = this.injectFolderCommands(commands, userPrompt);
+
     return {
       explanation,
-      actions:  this.sanitizeFileActions(actions, userPrompt, entryPoints, rootPath),
-      commands,
+      actions:  withFolders,
+      commands: withCommands,
     };
   }
 
@@ -954,8 +1068,68 @@ export class LocalAgent {
 
     if (ext && CODE_EXTENSIONS.has(ext)) { return true; }
     if (KNOWN_FILENAMES.has(base) && base !== 'README.md') { return true; }
+    if (base === '.gitkeep' || base === '.keep') { return true; }
 
     return PATH_HINT_RE.test(filePath);
+  }
+
+  /** ¿Las carpetas pedidas tienen al menos un archivo en las acciones? */
+  private foldersCovered(actions: FileAction[], folders: string[]): boolean {
+    if (folders.length === 0) { return true; }
+    const paths = actions.map((a) => a.filePath.replace(/\\/g, '/').toLowerCase());
+    return folders.every((f) =>
+      paths.some((p) => p === f || p.startsWith(`${f}/`))
+    );
+  }
+
+  /** Si el modelo no emitió mkdir, la extensión lo añade. */
+  private injectFolderCommands(
+    commands: CommandAction[],
+    userPrompt: string
+  ): CommandAction[] {
+    const folders = this.extractRequestedFolders(userPrompt);
+    if (folders.length === 0) { return commands; }
+
+    const result = [...commands];
+    for (const folder of folders) {
+      const hasMkdir = result.some((c) =>
+        /\bmkdir\b/.test(c.command) && c.command.includes(folder)
+      );
+      if (!hasMkdir) {
+        result.unshift({
+          command: `mkdir -p ${folder}`,
+          reason:  `Crear carpeta ${folder} (auto por Local Copilot)`,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** MODIFICAR en archivo inexistente → CREAR. */
+  private async normalizeActionTypes(
+    actions: FileAction[],
+    rootPath: string
+  ): Promise<FileAction[]> {
+    const out: FileAction[] = [];
+    for (const action of actions) {
+      if (action.type === 'delete') {
+        out.push(action);
+        continue;
+      }
+      const fullPath = path.isAbsolute(action.filePath)
+        ? action.filePath
+        : path.join(rootPath, action.filePath);
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.file(fullPath));
+        out.push(action);
+      } catch {
+        out.push({ ...action, type: 'create' });
+        this.outputChannel.appendLine(
+          `[CREATE] ${action.filePath} no existía — tratado como CREAR`
+        );
+      }
+    }
+    return out;
   }
 
   private looksLikeSourceCode(content: string): boolean {
@@ -1020,14 +1194,18 @@ export class LocalAgent {
         continue;
       }
 
-      result.push({ ...action, filePath });
+      const content = action.content
+        ? this.stripMarkdownFromContent(action.content)
+        : action.content;
+
+      result.push({ ...action, filePath, content });
     }
 
     return result;
   }
 
   private looksLikeImplementationTask(prompt: string): boolean {
-    return /\b(crea|crear|arregla|arreglar|fix|corrige|publica|publicar|sube|subir|implementa|modifica|escribe|genera|deploy|commit|push|github|git|revisa|revisar|analiza|analizar|inspecciona|programa|programar|mejora|mejorar|refactoriza|refactorizar|añade|agrega|instala|configura|actualiza|chatbot|bot|api|endpoint|componente|funci[oó]n)\b/i
+    return /\b(crea|crear|arregla|arreglar|fix|corrige|publica|publicar|sube|subir|implementa|modifica|escribe|genera|deploy|commit|push|github|git|revisa|revisar|analiza|analizar|inspecciona|programa|programar|mejora|mejorar|refactoriza|refactorizar|añade|agrega|instala|configura|actualiza|chatbot|bot|api|endpoint|componente|funci[oó]n|carpeta|caperta|directorio|folder|multimedia)\b/i
       .test(prompt);
   }
 
@@ -1166,6 +1344,26 @@ export class LocalAgent {
    *
    * Crea directorios padre recursivamente (fix EACCES permission denied).
    */
+  /** Comprueba en disco que los cambios de Ollama se aplicaron de verdad. */
+  private async verifyAppliedActions(
+    actions: FileAction[],
+    rootPath: string,
+    onProgress: (msg: string) => void
+  ): Promise<void> {
+    for (const action of actions) {
+      if (action.type === 'delete') { continue; }
+      const fullPath = path.isAbsolute(action.filePath)
+        ? action.filePath
+        : path.join(rootPath, action.filePath);
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.file(fullPath));
+        onProgress(`✅ En disco: ${action.filePath}`);
+      } catch {
+        onProgress(`❌ NO creado: ${action.filePath} — reintenta o revisa Output → Local Copilot`);
+      }
+    }
+  }
+
   private async applyActions(actions: FileAction[], rootPath: string): Promise<void> {
     for (const action of actions) {
       const fullPath = path.isAbsolute(action.filePath)

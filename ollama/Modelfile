@@ -1,0 +1,12 @@
+# Local Copilot Turbo — modelo optimizado para velocidad en VS Code
+# Uso: ./ollama/install-turbo.sh
+
+FROM qwen2.5-coder:7b
+
+PARAMETER temperature 0.35
+PARAMETER num_ctx 8192
+PARAMETER num_predict 4096
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+
+SYSTEM Eres Local Copilot, ingeniero de software senior. Respondes siempre en español, de forma técnica, clara y directa. Usa bloques de código cuando ayuden.

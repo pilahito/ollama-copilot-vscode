@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.30] - 2026-06-22
+
+### Fixed
+- **Agente crea carpetas**: `.gitkeep` ya no se descarta como ruta inválida
+- `mkdir -p` automático cuando pides crear una carpeta
+- Verificación en disco (`✅ En disco` / `❌ NO creado`)
+- Quita ` ``` ` del código antes de escribir archivos
+- Reintento si Ollama olvida la carpeta pedida
+
+### Added
+- Pestaña **Profesor**, Markdown en chat, modelo `local-copilot-turbo`
+- Carpeta `ollama/` con Modelfile e `install-turbo.sh`
+
 ## [1.0.25] - 2026-06-22
 
 ### Fixed

@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot gratuito para VS Code: autocompletado, chat, agente que programa con Ollama, +Internet para investigar, e integración GitHub.",
-  "version": "1.0.25",
+  "version": "1.0.30",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -341,6 +341,31 @@
           "type": "string",
           "default": "meta-llama/Llama-3.2-11B-Vision-Instruct",
           "description": "Modelo HuggingFace a utilizar."
+        },
+        "local.ollamaKeepAlive": {
+          "type": "string",
+          "default": "30m",
+          "description": "Tiempo que Ollama mantiene el modelo en RAM (evita recargas lentas)."
+        },
+        "local.ollamaNumCtx": {
+          "type": "number",
+          "default": 8192,
+          "description": "Contexto máximo de Ollama. Menor = más rápido (4096–8192 recomendado)."
+        },
+        "local.ollamaNumPredict": {
+          "type": "number",
+          "default": 4096,
+          "description": "Tokens máximos por respuesta en chat con Ollama."
+        },
+        "local.ollamaTemperature": {
+          "type": "number",
+          "default": 0.35,
+          "description": "Temperatura Ollama para chat (0.2–0.5)."
+        },
+        "local.ollamaWarmup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Precalienta el modelo al abrir el chat (menos espera en el primer mensaje)."
         }
       }
     }

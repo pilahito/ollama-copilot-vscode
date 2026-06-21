@@ -28,8 +28,10 @@ import { enrichMessageWithEditor, needsEditorContext } from './editorContext';
 
 // ── Tipos de mensajes Webview ────────────────────────────────────────────────
 
+type ChatMode = 'chat' | 'agent' | 'teacher';
+
 type WebviewInMessage =
-  | { type: 'send'; text: string; mode: 'chat' | 'agent'; includeEditor?: boolean }
+  | { type: 'send'; text: string; mode: ChatMode; includeEditor?: boolean }
   | { type: 'checkConnection' }
   | { type: 'setProvider'; provider: string }
   | { type: 'setInternetMode'; useInternet: boolean }
@@ -47,6 +49,11 @@ const EXPLAIN_CODE_PROMPT =
   'Eres Local, experto en código. El usuario te envía código del editor de VS Code. ' +
   'Explica qué hace paso a paso en español, claro y conciso. ' +
   'Si hay un bloque ``` con código, analízalo SIEMPRE — nunca digas que falta código.';
+
+const TEACHER_PROMPT =
+  'Eres Local Profesor, mentor de programación paciente. Explicas paso a paso en español ' +
+  'con analogías simples, ejemplos cortos y mini-ejercicios opcionales. ' +
+  'Usa Markdown (títulos, listas, bloques de código). No modificas archivos; solo enseñas.';
 
 /**
  * Vista de chat en la barra lateral (como el panel de Copilot Chat).
@@ -125,6 +132,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           groq: 'groqApiKey',
           cerebras: 'cerebrasApiKey',
           together: 'togetherApiKey',
+          cohere: 'cohereApiKey',
           huggingface: 'huggingfaceApiKey',
           gemini: 'geminiApiKey',
           openrouter: 'openRouterApiKey',
@@ -162,6 +170,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     // Siempre detectar IAs instaladas al cargar (independiente del proveedor)
     void this.loadOllamaModels();
+
+    // Precalentar Ollama en RAM (evita espera larga en el primer mensaje)
+    void this.ollama.warmupModel(this.getCurrentModel());
   }
 
   // ── API pública ───────────────────────────────────────────────────────────────
@@ -170,7 +181,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
    * Permite que comandos externos (clic derecho "explicar/arreglar")
    * empujen texto al chat y abran el panel automáticamente.
    */
-  public sendExternalPrompt(text: string, mode: 'chat' | 'agent' = 'chat'): void {
+  public sendExternalPrompt(text: string, mode: ChatMode = 'chat'): void {
     this.view?.show?.(true);
     this.post({ type: 'prefill', text, mode });
   }
@@ -179,7 +190,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   private async handleUserMessage(
     text: string,
-    mode: 'chat' | 'agent',
+    mode: ChatMode,
     includeEditor = false
   ): Promise<void> {
     const wantsCode = includeEditor || needsEditorContext(text);
@@ -211,7 +222,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       await this.handleAgentMode(enriched.text);
       return;
     }
-    await this.handleChatMode(enriched.text, enriched.attached);
+    await this.handleChatMode(enriched.text, enriched.attached, mode === 'teacher' ? 'teacher' : 'chat');
   }
 
   /**
@@ -222,7 +233,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const config = vscode.workspace.getConfiguration('local');
       const agentModel = config.get<string>('chatModel') || config.get<string>('completionModel');
-      this.post({ type: 'progress', text: `🧠 Ollama (${agentModel ?? 'local'}) programando tu proyecto…` });
+      this.post({ type: 'progress', text: `🧠 Ollama (${agentModel ?? 'local'}) programando — la extensión escribe en disco…` });
       const result = await this.agent.handleRequest(text, (progress) => {
         this.post({ type: 'progress', text: progress });
       }, agentModel);
@@ -268,7 +279,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
    * Modo chat: streaming directo con Ollama, sin tocar archivos del proyecto.
    * Si el modo internet está activo, usa búsqueda web + IA local.
    */
-  private async handleChatMode(text: string, hasEditorCode = false): Promise<void> {
+  private async handleChatMode(
+    text: string,
+    hasEditorCode = false,
+    chatMode: 'chat' | 'teacher' = 'chat'
+  ): Promise<void> {
     const status = await this.ollama.checkConnection();
     if (!status.ok) {
       const providerName = status.provider === 'gemini'
@@ -285,9 +300,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'responseStart' });
     try {
-      const systemContent = hasEditorCode || needsEditorContext(text)
-        ? EXPLAIN_CODE_PROMPT
-        : SYSTEM_PROMPT;
+      let systemContent = SYSTEM_PROMPT;
+      if (hasEditorCode || needsEditorContext(text)) {
+        systemContent = EXPLAIN_CODE_PROMPT;
+      } else if (chatMode === 'teacher') {
+        systemContent = TEACHER_PROMPT;
+      }
 
       const messages = [
         { role: 'system' as const, content: systemContent },
@@ -451,6 +469,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     border-radius: 20px;
     font-size: 11px;
     font-weight: 500;
+    max-width: 160px;
+    flex-shrink: 1;
+  }
+
+  #status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .status-badge.online {
@@ -550,8 +576,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 10px 16px;
+    gap: 6px;
+    padding: 8px 10px;
+    min-width: 0;
     border: none;
     border-radius: 8px;
     font-size: 13px;
@@ -798,11 +825,20 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   .input-hint {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
+    gap: 6px;
     margin-top: 8px;
     font-size: 11px;
     color: var(--vscode-descriptionForeground, var(--text-muted));
+  }
+
+  @media (max-width: 340px) {
+    .header-top { flex-wrap: wrap; }
+    .status-badge { font-size: 10px; padding: 3px 8px; }
+    .shortcuts { flex-wrap: wrap; gap: 6px; }
+    .suggestions { grid-template-columns: 1fr; }
   }
 
   .shortcuts {
@@ -849,6 +885,21 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   .message-bubble pre code {
     background: none;
     padding: 0;
+  }
+
+  .message-bubble a {
+    color: #A78BFA;
+    text-decoration: underline;
+  }
+
+  .message-bubble strong { font-weight: 600; }
+  .message-bubble em { font-style: italic; opacity: 0.9; }
+  .message-bubble h3, .message-bubble h4 {
+    margin: 8px 0 4px;
+    font-size: 13px;
+  }
+  .message-bubble ul, .message-bubble ol {
+    margin: 6px 0 6px 18px;
   }
 
   /* ═══════════════════════════════════════════════════════════════════════════
@@ -1225,6 +1276,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="icon">💬</span>
     <span>Chat</span>
   </button>
+  <button class="mode-tab" id="mode-teacher" onclick="setMode('teacher')">
+    <span class="icon">🎓</span>
+    <span>Profesor</span>
+  </button>
   <button class="mode-tab" id="mode-agent" onclick="setMode('agent')">
     <span class="icon"><img src="${iconUri}" alt="" class="tab-icon-img" /></span>
     <span>Agente</span>
@@ -1318,6 +1373,16 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
       <div class="api-card">
         <div class="api-header">
+          <span>🔷 Cohere</span>
+          <span class="badge-free">GRATIS</span>
+        </div>
+        <p class="api-desc">Command R — plan gratuito con límites</p>
+        <input type="password" id="cohere-key" placeholder="API Key de Cohere" class="api-input">
+        <a href="https://dashboard.cohere.com/api-keys" target="_blank" class="api-link">Obtener API Key →</a>
+      </div>
+
+      <div class="api-card">
+        <div class="api-header">
           <span>🤗 HuggingFace</span>
           <span class="badge-free">GRATIS</span>
         </div>
@@ -1371,12 +1436,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <!-- FOOTER CREADOR -->
 <div class="creator-footer">
   <div class="creator-info">
-    <div class="creator-avatar">👨‍💻</div>
+    <div class="creator-avatar"><img src="${iconUri}" alt="" class="avatar-img" /></div>
     <span>Creado por</span>
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.25</span>
+    <span class="version-badge">v1.0.30</span>
   </div>
 </div>
 
@@ -1394,6 +1459,51 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   const WEB_PROVIDERS = ['groq', 'cerebras', 'together', 'cohere', 'huggingface', 'gemini', 'openrouter'];
   let mode = 'chat';
   let currentAiEl = null;
+  let streamRaw = '';
+
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    const fence = String.fromCharCode(96, 96, 96);
+    const blocks = [];
+    const codeRe = new RegExp(fence + '(\\w*)\\n?([\\s\\S]*?)' + fence, 'g');
+    let src = text.replace(codeRe, (_, lang, code) => {
+      const id = blocks.length;
+      blocks.push(
+        '<pre><code class="lang-' + (lang || 'text') + '">' +
+        escapeHtml(code.trim()) + '</code></pre>'
+      );
+      return '@@CODE' + id + '@@';
+    });
+
+    let html = escapeHtml(src);
+    blocks.forEach((block, i) => {
+      html = html.split('@@CODE' + i + '@@').join(block);
+    });
+
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/_([^_\n]+)_/g, '<em>$1</em>');
+    const tick = String.fromCharCode(96);
+    html = html.replace(new RegExp(tick + '([^' + tick + '\\n]+)' + tick, 'g'), '<code>$1</code>');
+    html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>'
+    );
+    return html;
+  }
+
+  function setBubbleMarkdown(bubble, text) {
+    bubble.innerHTML = renderMarkdown(text);
+  }
 
   function isWebProvider(p) {
     return WEB_PROVIDERS.includes(p);
@@ -1403,13 +1513,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     mode = m;
     document.getElementById('mode-chat').classList.toggle('active', m === 'chat');
     document.getElementById('mode-agent').classList.toggle('active', m === 'agent');
-    const teacherTab = document.getElementById('mode-teacher');
-    if (teacherTab) teacherTab.classList.toggle('active', m === 'teacher');
+    document.getElementById('mode-teacher').classList.toggle('active', m === 'teacher');
 
     document.getElementById('hint').innerHTML = m === 'agent'
-      ? 'Agente: analiza y modifica archivos automáticamente'
+      ? '🤖 Agente: analiza y modifica archivos automáticamente'
       : m === 'teacher'
-      ? '🎓 Profesor: explica paso a paso'
+      ? '🎓 Profesor: explica paso a paso sin tocar archivos'
       : '💬 Chat: responde preguntas sin modificar archivos';
 
     // Show model selector for Ollama even in agent/teacher mode
@@ -1444,7 +1553,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
-    bubble.textContent = text;
+    if (role === 'user') {
+      bubble.textContent = text;
+    } else {
+      setBubbleMarkdown(bubble, text);
+    }
     
     const time = document.createElement('div');
     time.className = 'message-time';
@@ -1625,6 +1738,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       groq: document.getElementById('groq-key')?.value || '',
       cerebras: document.getElementById('cerebras-key')?.value || '',
       together: document.getElementById('together-key')?.value || '',
+      cohere: document.getElementById('cohere-key')?.value || '',
       huggingface: document.getElementById('huggingface-key')?.value || '',
       gemini: document.getElementById('gemini-key')?.value || '',
       openrouter: document.getElementById('openrouter-key')?.value || ''
@@ -1665,7 +1779,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       ollamaRow.style.display = 'flex';
       vscode.postMessage({ type: 'getOllamaModels' });
     } else {
-      ollamaRow.style.display = 'flex';
+      ollamaRow.style.display = 'none';
     }
   }
 
@@ -1783,12 +1897,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         
       case 'responseStart':
         removeTypingIndicator();
+        streamRaw = '';
         currentAiEl = addMessage('ai', '');
         break;
         
       case 'token':
         if (currentAiEl) {
-          currentAiEl.textContent += msg.text;
+          streamRaw += msg.text;
+          setBubbleMarkdown(currentAiEl, streamRaw);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         }
         break;
@@ -1801,6 +1917,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       case 'response':
         removeTypingIndicator();
         if (msg.done) {
+          streamRaw = '';
           addMessage('ai', msg.text);
           isSending = false;
         }

@@ -117,6 +117,62 @@ export class OllamaClient {
     return vscode.workspace.getConfiguration('local').get(key, fallback);
   }
 
+  /** Opciones Ollama para chat rápido (menos contexto = menos latencia). */
+  private getOllamaChatPayload(model: string, messages: OllamaChatMessage[], agent = false): string {
+    const temperature = agent
+      ? 0.05
+      : this.getConfig('ollamaTemperature', 0.35);
+    const numPredict = agent
+      ? 12_288
+      : this.getConfig('ollamaNumPredict', 4096);
+
+    return JSON.stringify({
+      model,
+      messages,
+      stream: true,
+      keep_alive: this.getConfig('ollamaKeepAlive', '30m'),
+      options: {
+        temperature,
+        num_ctx: this.getConfig('ollamaNumCtx', 8192),
+        num_predict: numPredict,
+        top_p: agent ? 0.85 : 0.9,
+        repeat_penalty: agent ? 1.15 : 1.1,
+        stop: agent ? ['<<FIN>>\n\n<<FIN>>'] : undefined,
+      },
+    });
+  }
+
+  /**
+   * Precalienta el modelo en RAM para que el primer mensaje no tarde.
+   * Se ejecuta en segundo plano al abrir el chat.
+   */
+  async warmupModel(model?: string): Promise<void> {
+    if (!this.getConfig('ollamaWarmup', true)) {
+      return;
+    }
+    this.refreshConfig();
+    await this.resolveAutoProvider();
+    if (this.getEffectiveProvider() !== 'ollama') {
+      return;
+    }
+
+    const useModel = model ?? this.getConfig('chatModel', 'qwen2.5-coder:7b');
+    try {
+      await this.httpPost(
+        '/api/generate',
+        JSON.stringify({
+          model: useModel,
+          prompt: 'ok',
+          stream: false,
+          keep_alive: this.getConfig('ollamaKeepAlive', '30m'),
+          options: { num_predict: 1, num_ctx: 512 },
+        })
+      );
+    } catch {
+      // El warmup es opcional; no bloquea el chat.
+    }
+  }
+
   /** Refresca la configuración desde el usuario (por si cambió la API o el proveedor). */
   refreshConfig(): void {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
@@ -595,7 +651,7 @@ export class OllamaClient {
 
     return new Promise((resolve, reject) => {
       const url     = new URL(`${this.baseUrl}/api/chat`);
-      const payload = JSON.stringify({ model: useModel, messages, stream: true });
+      const payload = this.getOllamaChatPayload(useModel, messages, false);
 
       const req = http.request(
         {
@@ -662,18 +718,7 @@ export class OllamaClient {
 
     return new Promise((resolve, reject) => {
       const url = new URL(`${this.baseUrl}/api/chat`);
-      const payload = JSON.stringify({
-        model: useModel,
-        messages,
-        stream: true,
-        options: {
-          temperature: 0.05,
-          num_predict: 12_288,
-          top_p: 0.85,
-          repeat_penalty: 1.15,
-          stop: ['<<FIN>>\n\n<<FIN>>'],
-        },
-      });
+      const payload = this.getOllamaChatPayload(useModel, messages, true);
 
       const req = http.request(
         {
@@ -720,7 +765,7 @@ export class OllamaClient {
   }
 
   private emitChunks(text: string, onToken: (token: string) => void): void {
-    const chunks = text.match(/.{1,5}/gs) ?? [text];
+    const chunks = text.match(/.{1,12}/gs) ?? [text];
     for (const chunk of chunks) {
       if (chunk) {
         onToken(chunk);
