@@ -641,6 +641,82 @@ export class OllamaClient {
     });
   }
 
+  /**
+   * Chat optimizado para el modo agente: temperatura baja y más tokens de salida.
+   */
+  async agentChatStream(
+    messages: OllamaChatMessage[],
+    onToken:  (token: string) => void,
+    model?:   string
+  ): Promise<string> {
+    this.refreshConfig();
+    await this.resolveAutoProvider();
+    const effective = this.getEffectiveProvider();
+    const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
+
+    if (this.isInternetProvider(effective)) {
+      return this.chatStream(messages, onToken, useModel);
+    }
+
+    let fullResponse = '';
+
+    return new Promise((resolve, reject) => {
+      const url = new URL(`${this.baseUrl}/api/chat`);
+      const payload = JSON.stringify({
+        model: useModel,
+        messages,
+        stream: true,
+        options: {
+          temperature: 0.1,
+          num_predict: 8192,
+          top_p: 0.9,
+        },
+      });
+
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port:     url.port,
+          path:     url.pathname,
+          method:   'POST',
+          headers:  {
+            'Content-Type':   'application/json',
+            'Content-Length': Buffer.byteLength(payload),
+          },
+        },
+        (res) => {
+          let buffer = '';
+
+          res.on('data', (chunk: Buffer) => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              if (!line.trim()) { continue; }
+              try {
+                const json  = JSON.parse(line) as { message?: { content?: string } };
+                const token = json.message?.content ?? '';
+                if (token) {
+                  fullResponse += token;
+                  onToken(token);
+                }
+              } catch {
+                // Línea incompleta.
+              }
+            }
+          });
+
+          res.on('end', () => resolve(fullResponse));
+        }
+      );
+
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
   private emitChunks(text: string, onToken: (token: string) => void): void {
     const chunks = text.match(/.{1,5}/gs) ?? [text];
     for (const chunk of chunks) {

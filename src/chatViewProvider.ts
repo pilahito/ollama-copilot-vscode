@@ -211,7 +211,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (result.actions.length === 0 && result.commands.length === 0) {
-        summary += '_El agente no aplicó cambios. Usa modo **Agente** (no Chat) y pide explícitamente crear/arreglar/publicar._';
+        const refused = /\b(no puedo|derechos de autor|copyright|lo siento)\b/i.test(result.explanation);
+        summary += refused
+          ? '_El modelo rechazó modificar código (falso positivo de copyright). Reintenta con: "Modifica directamente los archivos del proyecto" o usa un modelo coder más grande (14b)._'
+          : '_El agente no generó cambios. Sé más específico: "Modifica src/archivo.ts y arregla X"._';
       }
 
       this.post({ type: 'response', text: summary, done: true });
