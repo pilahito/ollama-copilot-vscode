@@ -67,7 +67,29 @@ code --install-extension local-copilot-1.0.0.vsix
 
 ---
 
-## 🤖 Proveedores de IA
+## 🤖 Proveedores de IA y Selector de Modelos
+
+Puedes elegir **tú** el modelo y si usar internet o no:
+
+### Selector de modelos
+- En el chat lateral verás el desplegable **📦 Modelo**.
+- Usa el comando: **Local: Elegir modelo de IA (de los detectados)**
+- El selector se mantiene visible aunque cambies entre "Local" y "+Internet".
+- El **agente** usa automáticamente el modelo que elijas.
+
+### Con / sin internet
+- **Local (Ollama)**: sin internet, gratis, privado.
+- **+Internet**: DuckDuckGo (sin clave), Groq, Cerebras, Together, etc.
+
+Comando rápido: **Local: Usar IA con internet (DuckDuckGo gratis)**
+
+Modelos instalados se detectan automáticamente con `ollama list`.
+
+### Recomendaciones según tu PC
+- Recomendaciones conservadoras (modelos pequeños 1.5b-7b para PCs normales).
+- En "Ver IAs recomendadas" primero muestra **tus modelos instalados reales**.
+
+## 🤖 Proveedores de IA (detalle)
 
 ### 🏠 Modo LOCAL (sin internet)
 
