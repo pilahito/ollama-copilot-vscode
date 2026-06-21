@@ -1441,7 +1441,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.30</span>
+    <span class="version-badge">v1.0.31</span>
   </div>
 </div>
 

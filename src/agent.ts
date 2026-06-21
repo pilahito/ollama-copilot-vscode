@@ -96,6 +96,14 @@ const ACTION_TYPE_MAP: Record<string, FileAction['type']> = {
   ELIMINAR:  'delete'
 };
 
+/** Plan de archivos/carpetas con sentido común (como un programador senior). */
+interface ArchitecturePlan {
+  folders:          string[];
+  modulesToCreate:  string[];
+  filesToModify:    string[];
+  summary:          string;
+}
+
 /** Metadatos del proyecto para orientar al modelo sin que el usuario nombre archivos. */
 interface ProjectProfile {
   type:        string;
@@ -106,6 +114,8 @@ interface ProjectProfile {
   moduleToCreate?: string;
   /** Carpetas que el usuario pidió crear (ej. multimedia). */
   foldersToCreate?: string[];
+  /** Distribución modular esperada para esta petición. */
+  architecture?: ArchitecturePlan;
 }
 
 /** Entorno local y SSH configurado en VS Code. */
@@ -343,12 +353,128 @@ export class LocalAgent {
     );
   }
 
+  /**
+   * Planifica carpetas y módulos según la petición (no todo en index.js).
+   * Ej: "carpeta multimedia" → multimedia/ + commands/multimedia.js + cableado en index.js
+   */
+  private buildArchitecturePlan(
+    userPrompt: string,
+    primaryEntry: string,
+    stack: string[],
+    projectTree: string[],
+    fileContents: Record<string, string>
+  ): ArchitecturePlan {
+    const folders = [...this.extractRequestedFolders(userPrompt)];
+    const modules: string[] = [];
+    const modifies = new Set<string>([primaryEntry]);
+
+    const inferFolder = (name: string, re: RegExp) => {
+      if (re.test(userPrompt) && !folders.includes(name)) {
+        folders.push(name);
+      }
+    };
+    inferFolder('multimedia', /\b(multimedia|im[aá]genes?|fotos?|v[ií]deos?|audios?|galer[ií]a)\b/i);
+    inferFolder('assets', /\b(assets?|recursos|est[aá]ticos)\b/i);
+    inferFolder('uploads', /\b(uploads?|subidas?)\b/i);
+    inferFolder('data', /\b(datos|data|json\s+de\s+datos)\b/i);
+
+    const hasCommandsDir = projectTree.some((p) => /[/\\]commands[/\\]?$/i.test(p) || p.endsWith('/commands'));
+    const hasSrcDir      = projectTree.some((p) => /[/\\]src[/\\]/i.test(p));
+    const cmdBase        = hasCommandsDir ? 'commands/' : (hasSrcDir ? 'src/commands/' : 'commands/');
+    const isDiscord      = stack.includes('Discord.js');
+
+    const featureSlug = (word: string): string =>
+      word.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+    if (isDiscord) {
+      if (folders.includes('multimedia') || /\bmultimedia\b/i.test(userPrompt)) {
+        modules.push(`${cmdBase}multimedia.js`);
+      }
+      const cmdMatch = userPrompt.match(/\bcomando\s+!?([\w-]+)/i);
+      if (cmdMatch) {
+        modules.push(`${cmdBase}${featureSlug(cmdMatch[1])}.js`);
+      }
+      if (/\b(nuevo|nueva)\s+(?:funci[oó]n|feature|m[oó]dulo)\b/i.test(userPrompt)) {
+        const feat = userPrompt.match(/\bpara\s+([\w-]+)/i);
+        if (feat) {
+          modules.push(`${cmdBase}${featureSlug(feat[1])}.js`);
+        }
+      }
+    }
+
+    if (this.wantsNewModuleFile(userPrompt)) {
+      modules.push('chatbot.js');
+    }
+
+    if (/\b(api|endpoint|ruta)\b/i.test(userPrompt) && isDiscord) {
+      modules.push(hasSrcDir ? 'src/routes/api.js' : 'routes/api.js');
+    }
+
+    const existingPaths = new Set(
+      Object.keys(fileContents).map((p) => path.basename(p))
+    );
+    if (existingPaths.has('chatbot.js') && /\bchatbot\b/i.test(userPrompt)) {
+      modifies.add('chatbot.js');
+    }
+
+    const uniqueModules = [...new Set(modules)];
+    const folderLine = folders.length ? folders.map((f) => `${f}/`).join(', ') : '(ninguna nueva)';
+    const moduleLine = uniqueModules.length ? uniqueModules.join(', ') : '(módulo según necesidad)';
+    const summary =
+      `Carpetas: ${folderLine}. Crear módulos: ${moduleLine}. ` +
+      `Modificar solo cableado en: ${[...modifies].join(', ')}. ` +
+      `La lógica nueva va en su módulo/carpeta, NO toda en ${primaryEntry}.`;
+
+    return {
+      folders,
+      modulesToCreate: uniqueModules,
+      filesToModify:   [...modifies],
+      summary,
+    };
+  }
+
+  /** ¿Ollama respetó la arquitectura modular (no solo index.js)? */
+  private architectureSatisfied(
+    actions: FileAction[],
+    plan: ArchitecturePlan,
+    primaryEntry: string
+  ): boolean {
+    if (plan.modulesToCreate.length === 0 && plan.folders.length === 0) {
+      return true;
+    }
+
+    const paths = actions.map((a) => a.filePath.replace(/\\/g, '/'));
+    const foldersOk = this.foldersCovered(actions, plan.folders);
+
+    const modulesOk = plan.modulesToCreate.every((m) =>
+      paths.some((p) => p === m || p.endsWith(`/${m}`))
+    );
+
+    if (plan.modulesToCreate.length > 0 && !modulesOk) {
+      const onlyEntry = paths.every((p) => {
+        const base = path.posix.basename(p);
+        return p === primaryEntry || base === 'index.js' || base === '.gitkeep' || p.endsWith('/.gitkeep');
+      });
+      const bigEntry = actions.find(
+        (a) => a.filePath.replace(/\\/g, '/') === primaryEntry ||
+          a.filePath.endsWith('index.js')
+      );
+      if (onlyEntry && (bigEntry?.content?.length ?? 0) > 400) {
+        return false;
+      }
+      return false;
+    }
+
+    return foldersOk;
+  }
+
   /** Detecta tipo de proyecto y archivo principal para guiar a Ollama automáticamente. */
   private buildProjectProfile(
     rootPath: string,
     entryPoints: string[],
     fileContents: Record<string, string>,
-    userPrompt = ''
+    userPrompt = '',
+    projectTree: string[] = []
   ): ProjectProfile {
     const primaryEntry = entryPoints[0]
       ? path.relative(rootPath, entryPoints[0]).replace(/\\/g, '/')
@@ -371,35 +497,39 @@ export class LocalAgent {
     else if (primaryEntry.endsWith('.ts')) { type = 'TypeScript/Node'; }
     else if (stack.includes('Discord.js')) { type = 'Bot de Discord (Node.js)'; }
 
-    let hint = `Modifica "${primaryEntry}" — es el punto de entrada del proyecto.`;
-    if (stack.includes('Discord.js')) {
-      hint += ' Para chatbot/comandos/eventos, edita el handler MessageCreate en ese archivo.';
-    }
+    const architecture = this.buildArchitecturePlan(
+      userPrompt, primaryEntry, stack, projectTree, fileContents
+    );
+    const foldersToCreate = architecture.folders;
     let moduleToCreate: string | undefined;
 
-    const foldersToCreate = this.extractRequestedFolders(userPrompt);
+    let hint =
+      `SENTIDO COMÚN: ${architecture.summary} ` +
+      `${primaryEntry} es solo el punto de entrada (require, registrar, login) — no metas ahí toda la lógica.`;
 
     if (this.wantsNewModuleFile(userPrompt)) {
       moduleToCreate = 'chatbot.js';
       hint =
-        `OBLIGATORIO para Ollama: 1) ACCION: CREAR | RUTA: chatbot.js | 2) ACCION: MODIFICAR | RUTA: ${primaryEntry} ` +
-        `con require("./chatbot"). Dos bloques ACCION con <<CONTENIDO>> completo.`;
-    } else if (foldersToCreate.length > 0) {
-      const folderList = foldersToCreate.map((f) => `${f}/.gitkeep`).join(', ');
-      hint +=
-        ` OBLIGATORIO carpeta(s): ACCION: CREAR | RUTA: ${folderList} | MOTIVO: carpeta solicitada ` +
-        `(<<CONTENIDO>> vacío o "# carpeta") Y MODIFICAR ${primaryEntry} para usar path.join(__dirname, "${foldersToCreate[0]}"). ` +
-        `NO uses rutas absolutas /home/...`;
-    } else if (/\b(chatbot|chat\s*bot|palabras?\s*clave|respuestas?\s*autom[aá]ticas?)\b/i.test(userPrompt)) {
-      hint += ' Añade respuestas por palabras clave (en chatbot.js o en el handler MessageCreate).';
+        `OBLIGATORIO: CREAR chatbot.js (lógica) + MODIFICAR ${primaryEntry} (solo require/registro). ` +
+        `Dos bloques ACCION con <<CONTENIDO>> completo.`;
+    } else if (architecture.modulesToCreate.length > 0) {
+      const mods = architecture.modulesToCreate.join(', ');
+      const fks  = foldersToCreate.map((f) => `${f}/.gitkeep`).join(', ');
+      hint =
+        `OBLIGATORIO mínimo: ` +
+        (fks ? `CREAR ${fks} + ` : '') +
+        `CREAR ${mods} (toda la lógica del pedido) + MODIFICAR ${primaryEntry} (solo conectar con require). ` +
+        `Usa path.join(__dirname, "carpeta") — sin rutas absolutas.`;
+    } else if (/\b(chatbot|chat\s*bot|palabras?\s*clave)\b/i.test(userPrompt)) {
+      hint += ' Lógica en chatbot.js; index.js solo conecta.';
     } else if (/\b(mejora|mejorar|arregla|fix)\b/i.test(userPrompt)) {
-      hint += ' Integra los cambios en el código existente; no dupliques index.js.';
+      hint += ' Cambio pequeño: puede ir en el módulo existente; si es grande, crea archivo nuevo.';
     }
     if (this.looksLikeRemoteTask(userPrompt)) {
-      hint += ' Para servidores/SSH usa COMANDO (diagnóstico) y ACCION en .sh/.conf/.service/.yml si toca configs.';
+      hint += ' SSH: COMANDO para diagnóstico; scripts en .sh/.conf/.yml.';
     }
 
-    return { type, primaryEntry, stack, hint, moduleToCreate, foldersToCreate };
+    return { type, primaryEntry, stack, hint, moduleToCreate, foldersToCreate, architecture };
   }
 
   /** Extrae nombres de carpetas pedidas en lenguaje natural. */
@@ -411,6 +541,7 @@ export class LocalAgent {
       /\b(?:crea(?:r)?|genera(?:r)?)\s+(?:la\s+|una\s+|el\s+)?(?:carpeta|caperta|directorio|folder)\s+["']?([\w.-]+)["']?/gi,
       /\b(?:carpeta|caperta|directorio|folder)\s+(?:llamada\s+|de\s+|para\s+)?["']?([\w.-]+)["']?/gi,
       /\b(?:en\s+la\s+)?(?:carpeta|caperta)\s+["']?([\w.-]+)["']?/gi,
+      /\b(?:carpeta|caperta)\s+para\s+["']?([\w.-]+)["']?/gi,
     ];
 
     for (const re of patterns) {
@@ -470,6 +601,21 @@ export class LocalAgent {
     }
 
     return result;
+  }
+
+  /** Ruta de módulo sugerida cuando Ollama pone una ruta inválida (evita index.js). */
+  private inferModulePathFromPrompt(prompt: string): string | null {
+    if (/\bmultimedia\b/i.test(prompt)) {
+      return 'commands/multimedia.js';
+    }
+    const cmd = prompt.match(/\bcomando\s+!?([\w-]+)/i);
+    if (cmd) {
+      return `commands/${cmd[1].toLowerCase()}.js`;
+    }
+    if (this.wantsNewModuleFile(prompt)) {
+      return 'chatbot.js';
+    }
+    return null;
   }
 
   /** El usuario pide un archivo/módulo nuevo (chatbot.js, etc.). */
@@ -627,11 +773,20 @@ export class LocalAgent {
       stackLine +
       `Archivo principal: ${profile.primaryEntry}\n` +
       `Guía: ${profile.hint}\n\n` +
-      `═══ PROTOCOLO (sigue estos pasos) ═══\n` +
-      `1. PLAN: (1-3 líneas) qué archivo tocar y qué cambiar.\n` +
-      `2. IDENTIFICAR: usa el archivo principal salvo que la petición nombre otro .js/.ts existente.\n` +
-      `3. IMPLEMENTAR: reescribe el archivo COMPLETO con los cambios integrados (no un fragmento suelto).\n` +
-      `4. EMITIR: bloque ACCION: MODIFICAR con <<CONTENIDO>>…<<FIN>>.\n\n` +
+      `═══ SENTIDO COMÚN DE PROGRAMADOR (OBLIGATORIO) ═══\n` +
+      `- Carpeta para datos/archivos del dominio (multimedia/, assets/, data/…)\n` +
+      `- Un módulo .js/.ts por funcionalidad (commands/foo.js, services/bar.js)\n` +
+      `- ${profile.primaryEntry} SOLO: cliente, require(), registrar comandos/rutas, login\n` +
+      `- PROHIBIDO meter toda la lógica nueva solo en ${profile.primaryEntry}\n` +
+      (profile.architecture
+        ? `- Para ESTA tarea: ${profile.architecture.summary}\n`
+        : '') +
+      `\n` +
+      `═══ PROTOCOLO ═══\n` +
+      `1. PLAN: qué carpetas, qué módulos nuevos y qué archivos solo cablear.\n` +
+      `2. CREAR carpetas (.gitkeep) y módulos con la lógica.\n` +
+      `3. MODIFICAR ${profile.primaryEntry} solo para conectar (require/registro).\n` +
+      `4. EMITIR un ACCION por cada archivo con <<CONTENIDO>>…<<FIN>>.\n\n` +
       `═══ REGLAS DE ARCHIVOS ═══\n` +
       `✅ PERMITIDO: .js .ts .tsx .jsx .py .go .rs y rutas como "index.js", "src/bot.ts"\n` +
       `❌ PROHIBIDO: .md .txt archivos sin extensión frases en español como nombre\n` +
@@ -640,12 +795,14 @@ export class LocalAgent {
       `❌ PROHIBIDO: poner código solo en EXPLICACION — el código va en <<CONTENIDO>>\n` +
       `❌ PROHIBIDO: envolver <<CONTENIDO>> en \`\`\`javascript — solo código puro dentro\n` +
       `❌ PROHIBIDO: rutas absolutas /home/usuario/... — usa path.join(__dirname, "carpeta")\n\n` +
-      `═══ EJEMPLO CORRECTO (carpeta multimedia) ═══\n` +
-      `ACCION: CREAR | RUTA: multimedia/.gitkeep | MOTIVO: carpeta multimedia\n<<CONTENIDO>>\n# multimedia\n<<FIN>>\n` +
-      `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: comando listmultimedia\n<<CONTENIDO>>\n(código COMPLETO con path.join)\n<<FIN>>\n\n` +
-      `═══ EJEMPLO CORRECTO (un archivo) ═══\n` +
-      `Petición: "agrega cosas al bot"\n` +
-      `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: mejoras\n<<CONTENIDO>>\n(código COMPLETO)\n<<FIN>>\n\n` +
+      `═══ EJEMPLO CORRECTO (carpeta multimedia + comando) ═══\n` +
+      `ACCION: CREAR | RUTA: multimedia/.gitkeep | MOTIVO: almacén de archivos\n<<CONTENIDO>>\n# multimedia\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: commands/multimedia.js | MOTIVO: lógica listmultimedia\n<<CONTENIDO>>\n` +
+      `(module.exports con fs.readdir path.join(__dirname,'../multimedia'))\n<<FIN>>\n` +
+      `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: registrar comando\n<<CONTENIDO>>\n` +
+      `(index.js COMPLETO: require commands/multimedia, añadir a commands{})\n<<FIN>>\n\n` +
+      `═══ EJEMPLO INCORRECTO (NUNCA) ═══\n` +
+      `❌ Meter fs.readdir y todo el comando solo dentro de index.js sin crear commands/multimedia.js\n\n` +
       `═══ EJEMPLO CORRECTO (crear chatbot.js) ═══\n` +
       `Petición: "crear archivo chatbot"\n` +
       `ACCION: CREAR | RUTA: chatbot.js | MOTIVO: respuestas por palabras clave\n<<CONTENIDO>>\n(module.exports…)\n<<FIN>>\n` +
@@ -696,16 +853,17 @@ export class LocalAgent {
         `Dos bloques ACCION con <<CONTENIDO>> completo. La extensión aplicará los cambios — no digas al usuario que lo haga.`
       );
     }
-    if (profile.foldersToCreate?.length) {
-      const f = profile.foldersToCreate[0];
+    if (profile.architecture && (profile.architecture.modulesToCreate.length > 0 || profile.architecture.folders.length > 0)) {
+      const arch = profile.architecture;
       return (
-        `Ollama debe CREAR "${f}/.gitkeep" y MODIFICAR "${profile.primaryEntry}" con path.join(__dirname, "${f}"). ` +
-        `Dos bloques ACCION mínimo. Sin \`\`\` dentro de <<CONTENIDO>>.`
+        `Arquitectura obligatoria: ${arch.summary} ` +
+        `Emite ACCION CREAR para cada carpeta (.gitkeep) y módulo (${arch.modulesToCreate.join(', ') || 'según plan'}), ` +
+        `luego ACCION MODIFICAR ${profile.primaryEntry} solo para require/registro. Sin \`\`\` en <<CONTENIDO>>.`
       );
     }
     return (
-      `Ollama programa en "${profile.primaryEntry}". ` +
-      `Devuelve PLAN + EXPLICACION + ACCION con código COMPLETO en <<CONTENIDO>>. La extensión escribe en disco.`
+      `Distribuye en módulos con sentido común; ${profile.primaryEntry} solo cablea. ` +
+      `PLAN + EXPLICACION + ACCION con <<CONTENIDO>> completo.`
     );
   }
 
@@ -729,7 +887,12 @@ export class LocalAgent {
       `Ruta: ${rootPath}\n` +
       `Tipo: ${profile.type}\n` +
       `Archivo principal: **${profile.primaryEntry}**\n` +
-      `${profile.hint}\n\n` +
+      `${profile.hint}\n` +
+      (profile.architecture
+        ? `\n═══ ARQUITECTURA ESPERADA ═══\n${profile.architecture.summary}\n` +
+          `Crear: ${profile.architecture.modulesToCreate.join(', ') || '(módulos según necesidad)'}\n` +
+          `Modificar (solo cablear): ${profile.architecture.filesToModify.join(', ')}\n\n`
+        : '\n') +
       (webContext ? `═══ INVESTIGACIÓN WEB ═══\n${webContext}\n\n` : '') +
       `═══ CÓDIGO ACTUAL (léelo antes de modificar) ═══\n` +
       (contextBlock || '(vacío — crea con ACCION: CREAR)') +
@@ -755,7 +918,7 @@ export class LocalAgent {
       })
       .join('\n\n');
 
-    const profile = this.buildProjectProfile(rootPath, entryPoints, fileContents, userPrompt);
+    const profile = this.buildProjectProfile(rootPath, entryPoints, fileContents, userPrompt, projectTree);
     const env = this.buildEnvironmentProfile();
     const taskMode = this.classifyTask(userPrompt);
     const baseUserMessage = this.buildAgentUserMessage(
@@ -776,23 +939,31 @@ export class LocalAgent {
       ];
 
       if (attempt === 1) {
-        const folderHint = profile.foldersToCreate?.length
-          ? `CREAR ${profile.foldersToCreate[0]}/.gitkeep + MODIFICAR ${profile.primaryEntry}. `
-          : '';
+        const archHint = profile.architecture?.summary ?? '';
         const retryHint = taskMode === 'remote'
           ? `CORRECCIÓN: emite COMANDO(s) de diagnóstico` +
             (env.sshTarget ? ` con ssh a ${env.sshTarget}` : '') +
             ` y EXPLICACION con hallazgos. Sin .md.`
           : profile.moduleToCreate
-            ? `CORRECCIÓN Ollama: CREAR ${profile.moduleToCreate} + MODIFICAR ${profile.primaryEntry}. ` +
-              `Dos ACCION con <<CONTENIDO>> completo. Sin explicar pasos al usuario.`
-            : `CORRECCIÓN Ollama: ${folderHint}ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | ` +
-              `<<CONTENIDO>> con código COMPLETO (sin \`\`\`). La extensión lo guarda en disco.`;
+            ? `CORRECCIÓN: CREAR ${profile.moduleToCreate} (lógica) + MODIFICAR ${profile.primaryEntry} (solo require). Dos ACCION.`
+            : profile.architecture?.modulesToCreate.length
+              ? `CORRECCIÓN ARQUITECTURA: ${archHint} ` +
+                `CREA ${profile.architecture.modulesToCreate.join(' y ')} con la lógica. ` +
+                `${profile.primaryEntry} solo registra/require — NO metas toda la funcionalidad ahí.`
+              : `CORRECCIÓN: ACCION con <<CONTENIDO>> completo (sin \`\`\`). Módulos separados si la tarea es grande.`;
         messages.push({ role: 'user', content: retryHint });
       } else if (attempt === 2) {
         const sshPrefix = this.formatSshInvoke(env);
-        const folderBlock = profile.foldersToCreate?.length
-          ? `ACCION: CREAR | RUTA: ${profile.foldersToCreate[0]}/.gitkeep | MOTIVO: carpeta\n<<CONTENIDO>>\n# carpeta\n<<FIN>>\n\n`
+        const arch = profile.architecture;
+        const modBlock = arch?.modulesToCreate.length
+          ? arch.modulesToCreate.map((m) =>
+              `ACCION: CREAR | RUTA: ${m} | MOTIVO: módulo\n<<CONTENIDO>>\n(module.exports…)\n<<FIN>>\n`
+            ).join('\n') + '\n'
+          : '';
+        const folderBlock = arch?.folders.length
+          ? arch.folders.map((f) =>
+              `ACCION: CREAR | RUTA: ${f}/.gitkeep | MOTIVO: carpeta\n<<CONTENIDO>>\n# ${f}\n<<FIN>>\n`
+            ).join('\n') + '\n'
           : '';
         const template = taskMode === 'remote'
           ? `EXPLICACION:\nDiagnóstico del servidor.\n\n` +
@@ -802,9 +973,9 @@ export class LocalAgent {
               `ACCION: CREAR | RUTA: ${profile.moduleToCreate} | MOTIVO: chatbot\n<<CONTENIDO>>\n\n<<FIN>>\n\n` +
               `ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | MOTIVO: conectar\n<<CONTENIDO>>\n\n<<FIN>>\n`
             : `EXPLICACION:\nImplementado.\n\n` +
-              folderBlock +
-              `ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | MOTIVO: petición\n<<CONTENIDO>>\n`;
-        messages.push({ role: 'user', content: `ÚLTIMO INTENTO Ollama — rellena con código real:\n\n${template}` });
+              folderBlock + modBlock +
+              `ACCION: MODIFICAR | RUTA: ${profile.primaryEntry} | MOTIVO: cablear módulos\n<<CONTENIDO>>\n`;
+        messages.push({ role: 'user', content: `ÚLTIMO INTENTO — arquitectura modular:\n\n${template}` });
       }
 
       let fullResponse = '';
@@ -824,9 +995,16 @@ export class LocalAgent {
         lastResult.actions,
         profile.foldersToCreate ?? []
       );
+      const archOk = profile.architecture
+        ? this.architectureSatisfied(lastResult.actions, profile.architecture, profile.primaryEntry)
+        : true;
 
-      if ((hasWork && moduleOk && foldersOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
+      if ((hasWork && moduleOk && foldersOk && archOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
         return lastResult;
+      }
+
+      if (!archOk) {
+        onProgress?.('🔄 Ollama metió todo en index.js — reintentando con arquitectura modular...');
       }
     }
 
@@ -1176,7 +1354,14 @@ export class LocalAgent {
       }
 
       if (!this.isValidCodeWritePath(filePath, userPrompt)) {
-        if (impl && primaryEntry && action.content && this.looksLikeSourceCode(action.content)) {
+        const archModule = this.inferModulePathFromPrompt(userPrompt);
+        if (impl && archModule && action.content && this.looksLikeSourceCode(action.content)) {
+          this.outputChannel.appendLine(
+            `[REDIRECT] "${filePath}" → ${archModule} (módulo dedicado, no index.js)`
+          );
+          filePath = archModule;
+          action = { ...action, filePath, type: 'create' };
+        } else if (impl && primaryEntry && action.content && this.looksLikeSourceCode(action.content)) {
           this.outputChannel.appendLine(
             `[REDIRECT] "${filePath}" → ${primaryEntry} (código válido, ruta inválida)`
           );
