@@ -387,7 +387,7 @@ export class LocalAgent {
 
   /** Parsea la respuesta estructurada del modelo en explicación + acciones. */
   private parseAgentResponse(raw: string): AgentResult {
-    const explanationMatch = raw.match(/EXPLICACION:\s*([\s\S]*?)(?=ACCION:|COMANDO:|$)/i);
+    const explanationMatch = raw.match(/EXPLICACI[OÓ]N:\s*([\s\S]*?)(?=ACCION:|COMANDO:|$)/i);
     const explanation      = explanationMatch ? explanationMatch[1].trim() : raw.trim();
 
     const actions  = this.parseFileActions(raw);
@@ -414,6 +414,20 @@ export class LocalAgent {
         content:  contenido.replace(/^\n/, '').replace(/\n$/, ''),
         reason:   motivo.trim()
       });
+    }
+
+    if (actions.length === 0) {
+      const inlineRegex =
+        /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*CONTENIDO:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)(?=\n|$)/gi;
+      while ((match = inlineRegex.exec(raw)) !== null) {
+        const [, tipoRaw, rutaRaw, contenido, motivo] = match;
+        actions.push({
+          type:     ACTION_TYPE_MAP[tipoRaw.toUpperCase()] ?? 'modify',
+          filePath: rutaRaw.trim(),
+          content:  contenido.trim(),
+          reason:   motivo.trim(),
+        });
+      }
     }
 
     return actions;
