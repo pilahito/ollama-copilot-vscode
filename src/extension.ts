@@ -35,9 +35,9 @@ const POLLING_INTERVAL_MS = 30_000;
 /** Modelo recomendado si el usuario no tiene ninguno descargado. */
 const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 
-/** Abre el chat en la barra lateral izquierda (mismo dock que archivos/Git). */
+/** Abre el chat en la barra lateral derecha. */
 async function openLocalChat(): Promise<void> {
-  await vscode.commands.executeCommand('workbench.action.focusSideBar');
+  await vscode.commands.executeCommand('workbench.action.focusAuxiliaryBar');
   await vscode.commands.executeCommand('workbench.view.extension.localcopilot');
 }
 
