@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot de código gratuito que usa tus IAs locales (Ollama) para autocompletado, chat y reparación autónoma de código.",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -142,9 +142,16 @@
       ]
     },
     "viewsContainers": {
-      "secondarySidebar": [
+      "activitybar": [
         {
           "id": "localcopilot",
+          "title": "Local Copilot",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "localcopilot-chat",
           "title": "Local Copilot",
           "icon": "media/icon.svg"
         }
@@ -152,6 +159,14 @@
     },
     "views": {
       "localcopilot": [
+        {
+          "type": "webview",
+          "id": "local.dockView",
+          "name": "Local Copilot",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "localcopilot-chat": [
         {
           "type": "webview",
           "id": "local.chatView",

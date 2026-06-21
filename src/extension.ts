@@ -25,6 +25,7 @@ import * as vscode from 'vscode';
 import { OllamaClient }                    from './ollamaClient';
 import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
 import { LocalChatViewProvider }          from './chatViewProvider';
+import { LocalDockViewProvider }          from './dockViewProvider';
 import { GitHubService }                   from './githubService';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -38,7 +39,13 @@ const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 /** Abre el chat en la barra lateral derecha. */
 async function openLocalChat(): Promise<void> {
   await vscode.commands.executeCommand('workbench.action.focusAuxiliaryBar');
-  await vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+  await vscode.commands.executeCommand('workbench.view.extension.localcopilot-chat');
+}
+
+/** Icono del dock: chat a la derecha, archivos siguen a la izquierda. */
+async function onDockIconActivated(): Promise<void> {
+  await openLocalChat();
+  await vscode.commands.executeCommand('workbench.view.explorer');
 }
 
 // ── Activación ────────────────────────────────────────────────────────────────
@@ -112,6 +119,10 @@ export function activate(context: vscode.ExtensionContext): void {
       LocalChatViewProvider.viewType,
       chatProvider,
       { webviewOptions: { retainContextWhenHidden: true } }
+    ),
+    vscode.window.registerWebviewViewProvider(
+      LocalDockViewProvider.viewType,
+      new LocalDockViewProvider(onDockIconActivated)
     )
   );
 
