@@ -35,6 +35,12 @@ const POLLING_INTERVAL_MS = 30_000;
 /** Modelo recomendado si el usuario no tiene ninguno descargado. */
 const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 
+/** Abre el chat en la barra lateral derecha (como GitHub Copilot). */
+async function openLocalChat(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.action.focusAuxiliaryBar');
+  await vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+}
+
 // ── Activación ────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -102,7 +108,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(LocalChatViewProvider.viewType, chatProvider)
+    vscode.window.registerWebviewViewProvider(
+      LocalChatViewProvider.viewType,
+      chatProvider,
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
   );
 
   // ── Autocompletado inline tipo Copilot ──────────────────────────────────────
@@ -118,7 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Abre el panel de chat en la barra lateral.
     vscode.commands.registerCommand('local.openChat', () => {
-      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+      void openLocalChat();
     }),
 
     // Comprueba la conexión manualmente y muestra una notificación con el resultado.
@@ -162,7 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const code = getSelectedCode();
       if (!code) { return; }
 
-      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+      void openLocalChat();
       chatProvider.sendExternalPrompt(
         `Explica en español qué hace este código:\n\n${code}`,
         'chat'
@@ -176,7 +186,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!code || !editor) { return; }
 
       const filePath = editor.document.uri.fsPath;
-      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+      void openLocalChat();
       chatProvider.sendExternalPrompt(
         `Arregla el siguiente código del archivo ${filePath}. Aplica el cambio directamente:\n\n${code}`,
         'agent'
@@ -185,7 +195,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Pide al agente que analice la estructura general del proyecto.
     vscode.commands.registerCommand('local.analyzeProject', () => {
-      vscode.commands.executeCommand('workbench.view.extension.localcopilot');
+      void openLocalChat();
       chatProvider.sendExternalPrompt(
         'Analiza la estructura general de este proyecto y dime qué mejorarías o si detectas algún problema.',
         'agent'
