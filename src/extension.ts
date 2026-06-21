@@ -42,8 +42,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
 
-  // Auto-detect and select the best installed model on startup for the user's PC
-  // (will refresh status after)
+  // Migrar configuración antigua (duckduckgo ya no aparece en el selector)
+  void (async () => {
+    const config = vscode.workspace.getConfiguration('local');
+    if (config.get<string>('provider') === 'duckduckgo') {
+      await config.update('provider', 'auto', vscode.ConfigurationTarget.Global);
+      await config.update('useInternet', true, vscode.ConfigurationTarget.Global);
+      ollama.refreshConfig();
+    }
+  })();
 
   // ── Status bar ──────────────────────────────────────────────────────────────
 
@@ -271,13 +278,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    // Usar proveedor con acceso a internet fácil (DuckDuckGo gratis, sin clave)
+    // Activar modo internet (requiere API configurada en ⚙️)
     vscode.commands.registerCommand('local.useInternetProvider', async () => {
       const config = vscode.workspace.getConfiguration('local');
-      await config.update('provider', 'duckduckgo', vscode.ConfigurationTarget.Global);
       await config.update('useInternet', true, vscode.ConfigurationTarget.Global);
+      await config.update('provider', 'auto', vscode.ConfigurationTarget.Global);
       ollama.refreshConfig();
-      vscode.window.showInformationMessage('✓ Usando DuckDuckGo AI (internet gratis, sin clave). El agente y chat ahora usan internet.');
+      await ollama.resolveAutoProvider();
+      vscode.window.showInformationMessage(
+        '✓ Internet activado. Configura una API en ⚙️ (Groq, Gemini, Cerebras…) o elige una en el panel.'
+      );
       await refreshStatusBar();
     }),
 

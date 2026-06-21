@@ -170,9 +170,41 @@ export class OllamaClient {
     return this.cachedBrowserName;
   }
 
+  private static readonly INTERNET_PROVIDERS: ProviderName[] = [
+    'groq', 'cerebras', 'gemini', 'together', 'cohere', 'huggingface', 'openrouter',
+  ];
+
+  private hasApiKeyFor(provider: ProviderName): boolean {
+    switch (provider) {
+      case 'groq':         return !!this.groqApiKey;
+      case 'cerebras':     return !!this.cerebrasApiKey;
+      case 'gemini':       return !!this.geminiApiKey;
+      case 'together':     return !!this.togetherApiKey;
+      case 'cohere':       return !!this.cohereApiKey;
+      case 'huggingface':  return !!this.huggingfaceApiKey;
+      case 'openrouter':   return !!this.openRouterApiKey;
+      default:             return false;
+    }
+  }
+
+  /** Primera API de internet con clave configurada (para modo Auto + Internet). */
+  pickFirstConfiguredInternetProvider(): ProviderName | null {
+    for (const provider of OllamaClient.INTERNET_PROVIDERS) {
+      if (this.hasApiKeyFor(provider)) {
+        return provider;
+      }
+    }
+    return null;
+  }
+
+  isInternetProvider(provider: ProviderName): boolean {
+    return OllamaClient.INTERNET_PROVIDERS.includes(provider);
+  }
+
   /**
-   * Resuelve el modo Auto: Ollama si hay modelos instalados,
-   * si no DuckDuckGo vía internet/navegador.
+   * Resuelve el modo Auto:
+   * - Sin internet → Ollama local
+   * - Con internet → primera API con clave configurada
    */
   async resolveAutoProvider(): Promise<ProviderName> {
     if (this.provider !== 'auto') {
@@ -180,26 +212,41 @@ export class OllamaClient {
       return this.provider;
     }
 
-    const installed = await this.getInstalledOllamaModels();
-    this.autoResolvedProvider = installed.length > 0 ? 'ollama' : 'duckduckgo';
+    if (!this.useInternet) {
+      this.autoResolvedProvider = 'ollama';
+      return 'ollama';
+    }
+
+    const picked = this.pickFirstConfiguredInternetProvider();
+    this.autoResolvedProvider = picked ?? 'groq';
     return this.autoResolvedProvider;
   }
 
   getEffectiveProvider(): ProviderName {
+    if (!this.useInternet) {
+      return 'ollama';
+    }
     return this.provider === 'auto' ? this.autoResolvedProvider : this.provider;
   }
 
   isEffectiveInternetMode(): boolean {
-    if (this.provider === 'auto') {
-      return this.autoResolvedProvider !== 'ollama';
-    }
     return this.useInternet;
   }
 
   getBrowserChatUrl(): string {
-    return this.getEffectiveProvider() === 'ollama'
-      ? 'https://ollama.com'
-      : 'https://duck.ai';
+    if (!this.useInternet) {
+      return 'https://ollama.com';
+    }
+    const urls: Partial<Record<ProviderName, string>> = {
+      groq: 'https://console.groq.com',
+      cerebras: 'https://cloud.cerebras.ai',
+      gemini: 'https://aistudio.google.com',
+      together: 'https://api.together.xyz',
+      cohere: 'https://dashboard.cohere.com',
+      huggingface: 'https://huggingface.co',
+      openrouter: 'https://openrouter.ai',
+    };
+    return urls[this.getEffectiveProvider()] ?? 'https://ollama.com';
   }
 
   // ── Estado de conexión ───────────────────────────────────────────────────────
@@ -243,9 +290,7 @@ export class OllamaClient {
           ok: true,
           models: ['gpt-4o-mini', 'claude-3-haiku', 'llama-3.3-70b', 'mixtral-8x7b'],
           provider: 'duckduckgo',
-          message: autoMode
-            ? `Sin Ollama local → DuckDuckGo en ${browserName}`
-            : `DuckDuckGo vía ${browserName}`,
+          message: 'Activa +Internet y configura una API en ⚙️ (Groq, Gemini, etc.).',
         });
       }
 
@@ -365,9 +410,9 @@ export class OllamaClient {
         ok: false,
         models: [],
         provider: 'ollama',
-        message: autoMode
-          ? `Sin Ollama → usa DuckDuckGo en ${browserName}`
-          : 'No se detecta Ollama en localhost:11434.',
+        message: autoMode && useInternet
+          ? 'Configura una API en ⚙️ para usar internet'
+          : 'No se detecta Ollama. Ejecuta "ollama serve" en tu terminal.',
       });
     }
   }
