@@ -30,6 +30,27 @@ export interface GitHubUser {
   email?: string | null;
 }
 
+/** Contexto Git/GitHub para que el agente Ollama decida herramientas. */
+export interface GitHubAgentContext {
+  isGitRepo:         boolean;
+  branch:            string;
+  remote:            string;
+  dirtyCount:        number;
+  hasGit:            boolean;
+  hasGh:             boolean;
+  ghAuthenticated:   boolean;
+  vscodeGitHubAuth:  boolean;
+  userLogin:         string | null;
+  projectName:       string;
+  toolkitSummary:    string;
+}
+
+export interface GitHubAgentResult {
+  ok:      boolean;
+  message: string;
+  url?:    string;
+}
+
 const GITHUB_SCOPES = ['repo', 'read:user', 'user:email'];
 const AUTH_PROVIDER = 'github';
 const AUTH_EXTENSION = 'vscode.github-authentication';
@@ -519,5 +540,190 @@ export class GitHubService {
         }
       }
     );
+  }
+
+  // ── Herramientas para el agente Ollama ────────────────────────────────────────
+
+  /** Estado Git/GitHub del proyecto abierto (sin diálogos). */
+  async getAgentContext(projectPath: string, projectName: string): Promise<GitHubAgentContext> {
+    const hasGit = await this.commandExists('git');
+    const hasGh  = await this.commandExists('gh');
+    let ghAuthenticated = false;
+    if (hasGh) {
+      ghAuthenticated = await this.isGhAuthenticated();
+    }
+
+    const session = await this.getSession();
+    let userLogin: string | null = session?.account.label ?? null;
+    if (!userLogin && ghAuthenticated) {
+      try {
+        const { stdout } = await execFileAsync('gh', ['api', 'user', '-q', '.login']);
+        userLogin = stdout.trim() || null;
+      } catch { /* ignore */ }
+    }
+
+    let isGitRepo = false;
+    let branch = '(sin git)';
+    let remote = '(sin remote)';
+    let dirtyCount = 0;
+
+    if (hasGit && this.isGitRepo(projectPath)) {
+      isGitRepo = true;
+      const br = await this.runGit(projectPath, ['branch', '--show-current'], true);
+      branch = br.stdout || 'main';
+      const rem = await this.runGit(projectPath, ['remote', 'get-url', 'origin'], true);
+      remote = rem.ok ? rem.stdout.replace(/x-access-token:[^@]+@/, '***@') : '(sin origin)';
+      const st = await this.runGit(projectPath, ['status', '--porcelain'], true);
+      dirtyCount = st.stdout ? st.stdout.split('\n').filter(Boolean).length : 0;
+    }
+
+    const toolkitSummary = this.buildToolkitSummary({
+      isGitRepo, hasGit, hasGh, ghAuthenticated, vscodeGitHubAuth: !!session,
+      remote, dirtyCount, userLogin,
+    });
+
+    return {
+      isGitRepo,
+      branch,
+      remote,
+      dirtyCount,
+      hasGit,
+      hasGh,
+      ghAuthenticated,
+      vscodeGitHubAuth: !!session,
+      userLogin,
+      projectName,
+      toolkitSummary,
+    };
+  }
+
+  private buildToolkitSummary(ctx: {
+    isGitRepo: boolean;
+    hasGit: boolean;
+    hasGh: boolean;
+    ghAuthenticated: boolean;
+    vscodeGitHubAuth: boolean;
+    remote: string;
+    dirtyCount: number;
+    userLogin: string | null;
+  }): string {
+    const lines: string[] = [];
+    if (!ctx.hasGit) {
+      lines.push('Git no instalado — instala git primero.');
+      return lines.join('\n');
+    }
+    if (!ctx.isGitRepo) {
+      lines.push('Proyecto sin git init — usa: git init');
+    } else {
+      lines.push(`Remote: ${ctx.remote}`);
+      lines.push(`Cambios sin commit: ${ctx.dirtyCount}`);
+    }
+    if (ctx.hasGh && ctx.ghAuthenticated) {
+      lines.push(`gh CLI: OK${ctx.userLogin ? ` (@${ctx.userLogin})` : ''}`);
+    } else if (ctx.hasGh) {
+      lines.push('gh CLI: instalado pero sin login — gh auth login');
+    } else {
+      lines.push('gh CLI: no instalado (opcional; también funciona con VS Code GitHub)');
+    }
+    if (ctx.vscodeGitHubAuth) {
+      lines.push('VS Code GitHub: conectado');
+    }
+    lines.push('');
+    lines.push('COMANDOs permitidos: git status, git add -A, git commit -m "...", git push');
+    lines.push('gh repo create NOMBRE --public --source=. --push | gh pr create | gh release create');
+    lines.push('O bloque GITHUB: PUBLICAR | COMMIT_PUSH | STATUS');
+    return lines.join('\n');
+  }
+
+  /** Publicar proyecto sin diálogos (modo agente). */
+  async publishForAgent(
+    projectPath: string,
+    repoName: string,
+    isPrivate = false,
+    description = ''
+  ): Promise<GitHubAgentResult> {
+    if (!(await this.commandExists('git'))) {
+      return { ok: false, message: 'Git no instalado' };
+    }
+
+    try {
+      if (await this.isGhAuthenticated()) {
+        const visibility = isPrivate ? '--private' : '--public';
+        await execFileAsync(
+          'gh',
+          ['repo', 'create', repoName, visibility, '--source', projectPath, '--remote', 'origin', '--push', '-d', description],
+          { cwd: projectPath, maxBuffer: 20 * 1024 * 1024 }
+        );
+        const url = `https://github.com/${repoName.includes('/') ? repoName : `${await this.resolveGhUser()}/${repoName}`}`;
+        return { ok: true, message: `Publicado con gh: ${repoName}`, url };
+      }
+
+      if (!(await this.getSession())) {
+        return { ok: false, message: 'Sin auth GitHub. Conecta con "Local: Conectar GitHub" o gh auth login' };
+      }
+
+      const nameOnly = repoName.includes('/') ? repoName.split('/').pop()! : repoName;
+      const repo = await this.createRepo(nameOnly, description, isPrivate);
+      if (!repo) {
+        return { ok: false, message: 'No se pudo crear el repositorio' };
+      }
+      await this.pushWithSession(projectPath, repo);
+      return { ok: true, message: `Publicado: ${repo.full_name}`, url: repo.html_url };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.output.appendLine(`[agent publish] ${msg}`);
+      return { ok: false, message: msg };
+    }
+  }
+
+  private async resolveGhUser(): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync('gh', ['api', 'user', '-q', '.login']);
+      return stdout.trim() || 'user';
+    } catch {
+      return 'user';
+    }
+  }
+
+  /** Commit y push automático (modo agente). */
+  async commitAndPushForAgent(
+    projectPath: string,
+    message: string
+  ): Promise<GitHubAgentResult> {
+    if (!this.isGitRepo(projectPath)) {
+      return { ok: false, message: 'No es un repositorio git' };
+    }
+
+    try {
+      const st = await this.runGit(projectPath, ['status', '--porcelain'], true);
+      if (st.stdout) {
+        await this.runGit(projectPath, ['add', '-A']);
+        await this.runGit(projectPath, ['commit', '-m', message]);
+      }
+      const push = await this.runGit(projectPath, ['push'], true);
+      if (!push.ok && push.stderr.includes('no upstream')) {
+        const br = await this.runGit(projectPath, ['branch', '--show-current'], true);
+        await this.runGit(projectPath, ['push', '-u', 'origin', br.stdout || 'main']);
+      } else if (!push.ok) {
+        return { ok: false, message: push.stderr || 'Push falló' };
+      }
+      return { ok: true, message: `Commit y push: ${message}` };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: msg };
+    }
+  }
+
+  /** Solo lectura: git status para el agente. */
+  async gitStatusForAgent(projectPath: string): Promise<GitHubAgentResult> {
+    if (!this.isGitRepo(projectPath)) {
+      return { ok: true, message: 'No hay repositorio git en este proyecto.' };
+    }
+    const st = await this.runGit(projectPath, ['status', '-sb'], true);
+    const short = await this.runGit(projectPath, ['status', '--short'], true);
+    return {
+      ok: true,
+      message: `${st.stdout}\n${short.stdout}`.trim() || 'Working tree clean',
+    };
   }
 }

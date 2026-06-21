@@ -116,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── Vista de chat lateral ───────────────────────────────────────────────────
 
-  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama);
+  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama, github);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       LocalChatViewProvider.viewType,

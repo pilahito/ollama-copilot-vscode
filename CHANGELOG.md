@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.32] - 2026-06-22
+
+### Added
+- **Herramientas GitHub en el agente**: bloques `GITHUB: PUBLICAR`, `COMMIT_PUSH` y `STATUS`
+- El agente lee el estado Git/GitHub del proyecto y ejecuta publicar, commit+push o status automáticamente
+- Auto-inyección si pides "publica en GitHub" o "haz commit y push" y Ollama no emite el bloque
+- Modo tarea `github` con contexto `gh` CLI y VS Code GitHub Auth
+
+## [1.0.31] - 2026-06-22
+
+### Added
+- Arquitectura modular: carpetas + módulos separados (no todo en `index.js`)
+- `buildArchitecturePlan` y reintento si Ollama mete toda la lógica en el entry point
+
 ## [1.0.30] - 2026-06-22
 
 ### Fixed

@@ -24,6 +24,7 @@
 import * as vscode from 'vscode';
 import { OllamaClient, ProviderName } from './ollamaClient';
 import { LocalAgent, FileAction, CommandAction } from './agent';
+import { GitHubService } from './githubService';
 import { enrichMessageWithEditor, needsEditorContext } from './editorContext';
 
 // ── Tipos de mensajes Webview ────────────────────────────────────────────────
@@ -72,10 +73,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    ollama: OllamaClient
+    ollama: OllamaClient,
+    github?: GitHubService
   ) {
     this.ollama = ollama;
-    this.agent  = new LocalAgent(ollama);
+    this.agent  = new LocalAgent(ollama, github);
   }
 
   // ── API de VS Code ────────────────────────────────────────────────────────────
@@ -257,14 +259,28 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      if (result.actions.length === 0 && result.commands.length === 0) {
+      if (result.githubTools.length > 0) {
+        summary += '\n**GitHub:**\n';
+        for (const gh of result.githubTools) {
+          const label = gh.type === 'publish' ? '🌍 Publicar'
+            : gh.type === 'commit_push' ? '📤 Commit + push'
+              : '📋 Status';
+          summary += `${label} — ${gh.reason}\n`;
+        }
+      }
+
+      const hasWork = result.actions.length > 0 ||
+        result.commands.length > 0 ||
+        result.githubTools.length > 0;
+
+      if (!hasWork) {
         const refused = /\b(no puedo|derechos de autor|copyright|lo siento)\b/i.test(result.explanation);
         summary += refused
           ? '_El modelo rechazó modificar código (falso positivo de copyright). Reintenta con: "Modifica directamente los archivos del proyecto" o usa un modelo coder más grande (14b)._'
-          : '_El agente no generó cambios. Sé más específico: "Modifica src/archivo.ts y arregla X"._';
+          : '_El agente no generó cambios. Sé más específico: "Modifica src/archivo.ts y arregla X" o "publica en GitHub"._';
       }
 
-      if (result.actions.length > 0 || result.commands.length > 0) {
+      if (hasWork) {
         summary += '\n_Aplicado por **Ollama** en modo Agente (no asistente externo)._';
       }
 

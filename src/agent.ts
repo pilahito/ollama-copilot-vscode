@@ -26,6 +26,7 @@ import { promisify } from 'util';
 import * as vscode from 'vscode';
 import * as path   from 'path';
 import { OllamaClient } from './ollamaClient';
+import { GitHubService, GitHubAgentContext } from './githubService';
 
 const execFileAsync = promisify(execFile);
 
@@ -43,10 +44,19 @@ export interface CommandAction {
   reason:  string;
 }
 
+export interface GitHubToolAction {
+  type:      'publish' | 'commit_push' | 'status';
+  repoName?: string;
+  message?:  string;
+  isPrivate?: boolean;
+  reason:    string;
+}
+
 export interface AgentResult {
   explanation: string;
   actions:     FileAction[];
   commands:    CommandAction[];
+  githubTools: GitHubToolAction[];
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -127,7 +137,7 @@ interface EnvironmentProfile {
   sshPort:    number;
 }
 
-type AgentTaskMode = 'code' | 'remote' | 'mixed';
+type AgentTaskMode = 'code' | 'remote' | 'mixed' | 'github';
 
 /**
  * Agente autónomo: recibe una petición en lenguaje natural, analiza el
@@ -139,10 +149,12 @@ type AgentTaskMode = 'code' | 'remote' | 'mixed';
  */
 export class LocalAgent {
   private readonly ollama:         OllamaClient;
+  private readonly github:         GitHubService | null;
   private readonly outputChannel:  vscode.OutputChannel;
 
-  constructor(ollama: OllamaClient) {
+  constructor(ollama: OllamaClient, github?: GitHubService) {
     this.ollama        = ollama;
+    this.github        = github ?? null;
     this.outputChannel = vscode.window.createOutputChannel('Local Agente');
   }
 
@@ -178,6 +190,14 @@ export class LocalAgent {
     onProgress(`📂 Leyendo ${filesToRead.length} archivo(s) relevante(s)...`);
     const fileContents = await this.readFiles(filesToRead);
 
+    const projectName = workspaceFolders[0].name;
+    let githubContext = '';
+    if (this.github) {
+      onProgress('🐙 Leyendo estado Git/GitHub...');
+      const ghCtx = await this.github.getAgentContext(rootPath, projectName);
+      githubContext = this.formatGitHubContextForAgent(ghCtx);
+    }
+
     let webContext = '';
     if (this.ollama.isInternetEnabled()) {
       onProgress('🌐 +Internet activo: investigando en la web...');
@@ -192,10 +212,11 @@ export class LocalAgent {
 
     onProgress('⚙️ Generando código y aplicando cambios...');
     const result = await this.generateSolution(
-      userPrompt, projectTree, fileContents, rootPath, entryPoints, model, onProgress, webContext
+      userPrompt, projectTree, fileContents, rootPath, entryPoints,
+      model, onProgress, webContext, githubContext, projectName
     );
 
-    const hasWork = result.actions.length > 0 || result.commands.length > 0;
+    const hasWork = result.actions.length > 0 || result.commands.length > 0 || result.githubTools.length > 0;
 
     if (hasWork) {
       const approved = await this.requestConfirmation(result, onProgress);
@@ -219,6 +240,13 @@ export class LocalAgent {
         await this.applyActions(normalized, rootPath);
         await this.verifyAppliedActions(normalized, rootPath, onProgress);
       }
+
+      if (result.githubTools.length > 0 && this.github) {
+        onProgress(`🐙 Ejecutando ${result.githubTools.length} acción(es) GitHub...`);
+        await this.executeGitHubTools(result.githubTools, rootPath, projectName, onProgress);
+      }
+    } else if (this.looksLikeGitHubTask(userPrompt)) {
+      onProgress('⚠️ El modelo no generó acciones GitHub. Prueba: "publica en GitHub", "haz commit y push" o "git status".');
     } else if (this.looksLikeImplementationTask(userPrompt) || this.looksLikeRemoteTask(userPrompt)) {
       const mainFile = entryPoints[0]
         ? path.relative(rootPath, entryPoints[0]).replace(/\\/g, '/')
@@ -346,10 +374,13 @@ export class LocalAgent {
     entryPoints:  string[],
     model?:       string,
     onProgress?:  (msg: string) => void,
-    webContext = ''
+    webContext = '',
+    githubContext = '',
+    projectName = 'proyecto'
   ): Promise<AgentResult> {
     return this.generateSolutionWithRetry(
-      userPrompt, projectTree, fileContents, rootPath, entryPoints, model, webContext, onProgress
+      userPrompt, projectTree, fileContents, rootPath, entryPoints,
+      model, webContext, githubContext, projectName, onProgress
     );
   }
 
@@ -663,11 +694,64 @@ export class LocalAgent {
       .test(prompt);
   }
 
+  private looksLikeGitHubTask(prompt: string): boolean {
+    return /\b(github|git\s+init|git\s+status|git\s+add|git\s+commit|git\s+push|gh\s+repo|gh\s+pr|gh\s+release|publica(?:r)?\s+(?:en\s+)?github|sube(?:r)?\s+(?:a\s+)?github|subir\s+(?:a\s+)?github|repositorio(?:\s+en\s+github)?|repo\s+remoto|commit\s+y\s+push|hacer\s+push|crear\s+release|pull\s+request|origin\s+remoto)\b/i
+      .test(prompt);
+  }
+
+  private looksLikePureGitHubTask(prompt: string): boolean {
+    return this.looksLikeGitHubTask(prompt) &&
+      !/\b(carpeta|caperta|m[oó]dulo|archivo|comando|chatbot|api|endpoint|fix|arregla|implementa|programa|multimedia|crea(?:r)?\s+(?:la\s+)?(?:carpeta|archivo))\b/i
+        .test(prompt);
+  }
+
+  private formatGitHubContextForAgent(ctx: GitHubAgentContext): string {
+    const lines = [
+      `Proyecto: ${ctx.projectName}`,
+      `Git repo: ${ctx.isGitRepo ? 'sí' : 'no'}`,
+      `Rama: ${ctx.branch}`,
+      `Remote origin: ${ctx.remote}`,
+      `Cambios sin commit: ${ctx.dirtyCount}`,
+      `Git instalado: ${ctx.hasGit ? 'sí' : 'no'}`,
+      `gh CLI: ${ctx.hasGh ? (ctx.ghAuthenticated ? 'autenticado' : 'sin login') : 'no instalado'}`,
+      `VS Code GitHub: ${ctx.vscodeGitHubAuth ? 'conectado' : 'no'}`,
+      ctx.userLogin ? `Usuario: @${ctx.userLogin}` : '',
+      '',
+      ctx.toolkitSummary,
+    ].filter(Boolean);
+    return lines.join('\n');
+  }
+
+  private buildGitHubToolsBlock(githubContext: string, taskMode: AgentTaskMode): string {
+    if (!githubContext || !this.github) { return ''; }
+
+    const roleHint = taskMode === 'github'
+      ? 'La tarea principal es Git/GitHub — usa bloques GITHUB o COMANDO git/gh.\n'
+      : 'Si el usuario pide publicar, commit o push, añade bloques GITHUB además del código.\n';
+
+    return (
+      `═══ GITHUB / GIT (herramientas del agente) ═══\n` +
+      `${githubContext}\n\n` +
+      roleHint +
+      `FORMATO GITHUB (la extensión ejecuta esto automáticamente):\n` +
+      `GITHUB: PUBLICAR | REPO: nombre-repo | PRIVADO: no | MOTIVO: <razón>\n` +
+      `GITHUB: COMMIT_PUSH | MENSAJE: mensaje del commit | MOTIVO: <razón>\n` +
+      `GITHUB: STATUS | MOTIVO: <razón>\n\n` +
+      `También válido: COMANDO: git add -A | MOTIVO: ...\n` +
+      `COMANDO: git commit -m "mensaje" | MOTIVO: ...\n` +
+      `COMANDO: git push | MOTIVO: ...\n` +
+      `COMANDO: gh repo create NOMBRE --public --source=. --push | MOTIVO: ...\n\n`
+    );
+  }
+
   private classifyTask(userPrompt: string): AgentTaskMode {
-    const code = this.looksLikeImplementationTask(userPrompt);
+    const github = this.looksLikeGitHubTask(userPrompt);
+    const code   = this.looksLikeImplementationTask(userPrompt) && !this.looksLikePureGitHubTask(userPrompt);
     const remote = this.looksLikeRemoteTask(userPrompt);
-    if (code && remote) { return 'mixed'; }
-    if (remote)         { return 'remote'; }
+    if (github && (code || remote)) { return 'mixed'; }
+    if (github)                     { return 'github'; }
+    if (code && remote)             { return 'mixed'; }
+    if (remote)                     { return 'remote'; }
     return 'code';
   }
 
@@ -730,7 +814,8 @@ export class LocalAgent {
     strict: boolean,
     profile: ProjectProfile,
     env: EnvironmentProfile,
-    taskMode: AgentTaskMode
+    taskMode: AgentTaskMode,
+    githubContext = ''
   ): string {
     const stackLine = profile.stack.length
       ? `Stack detectado: ${profile.stack.join(', ')}.\n`
@@ -755,8 +840,11 @@ export class LocalAgent {
     const roleLine = taskMode === 'remote'
       ? `Eres **Local Agent**, ingeniero DevOps/SRE senior. Supervisas, diagnosticas y mejoras sistemas.\n` +
         `Usa COMANDO para diagnóstico/ejecución y ACCION para scripts y configuraciones.\n`
+      : taskMode === 'github'
+        ? `Eres **Local Agent**, experto en Git y GitHub. Publicas repos, haces commit/push y revisas estado.\n` +
+          `Usa bloques GITHUB o COMANDO git/gh — la extensión los ejecuta por ti.\n`
       : taskMode === 'mixed'
-        ? `Eres **Local Agent**, full-stack + DevOps senior. Programas código Y supervisas servidores.\n`
+        ? `Eres **Local Agent**, full-stack + DevOps + GitHub senior. Programas, supervisas y publicas en Git.\n`
         : `Eres **Local Agent**, ingeniero senior autónomo. Tu salida útil es CÓDIGO en archivos.\n` +
           `NO solo explicas: PROGRAMAS.\n`;
 
@@ -767,6 +855,7 @@ export class LocalAgent {
       roleLine +
       `\n` +
       this.buildExpertiseBlock() +
+      this.buildGitHubToolsBlock(githubContext, taskMode) +
       this.buildSshBlock(env, taskMode) +
       `═══ PERFIL DEL PROYECTO ═══\n` +
       `Tipo: ${profile.type}\n` +
@@ -823,7 +912,10 @@ export class LocalAgent {
       `COMANDO: npm install paquete | MOTIVO: <solo si hace falta>\n` +
       `<<FIN>>\n\n` +
       `COMANDO: ssh usuario@servidor "systemctl status nginx" | MOTIVO: supervisar servicio remoto\n` +
-      `<<FIN>>\n`
+      `<<FIN>>\n\n` +
+      `GITHUB: PUBLICAR | REPO: mi-proyecto | PRIVADO: no | MOTIVO: primera publicación\n` +
+      `GITHUB: COMMIT_PUSH | MENSAJE: feat: cambios del agente | MOTIVO: subir al remoto\n` +
+      `GITHUB: STATUS | MOTIVO: ver cambios pendientes\n`
     );
   }
 
@@ -832,6 +924,12 @@ export class LocalAgent {
     env: EnvironmentProfile,
     taskMode: AgentTaskMode
   ): string {
+    if (taskMode === 'github') {
+      return (
+        `Tarea Git/GitHub: emite PLAN + EXPLICACION + bloque(s) GITHUB (PUBLICAR, COMMIT_PUSH o STATUS) ` +
+        `según lo que pida el usuario. Si hay cambios de código también, añade ACCION. No digas al usuario que ejecute git manualmente.`
+      );
+    }
     if (taskMode === 'remote') {
       const sshHint = env.sshTarget
         ? `Usa COMANDO con ssh a ${env.sshTarget} para diagnosticar. `
@@ -844,7 +942,8 @@ export class LocalAgent {
     if (taskMode === 'mixed') {
       return (
         `Combina ACCION en "${profile.primaryEntry}" (o .js/.ts/.sh correcto) CON COMANDO(s) ` +
-        `para supervisar ${env.sshTarget ?? 'el sistema local'}. PLAN + EXPLICACION + ACCION + COMANDO.`
+        `para supervisar ${env.sshTarget ?? 'el sistema local'}. Si pide GitHub, añade GITHUB. ` +
+        `PLAN + EXPLICACION + ACCION + COMANDO.`
       );
     }
     if (profile.moduleToCreate) {
@@ -874,15 +973,22 @@ export class LocalAgent {
     env: EnvironmentProfile,
     taskMode: AgentTaskMode,
     contextBlock: string,
-    webContext: string
+    webContext: string,
+    githubContext = ''
   ): string {
+    const modeLabel = taskMode === 'code' ? 'programación'
+      : taskMode === 'remote' ? 'supervisión/SSH'
+        : taskMode === 'github' ? 'Git/GitHub'
+          : 'código + servidor/Git';
+
     return (
       `═══ TAREA ═══\n` +
       `"${userPrompt}"\n\n` +
       `═══ ENTORNO ═══\n` +
       `SO local: ${env.localOs}\n` +
       (env.sshTarget ? `SSH remoto: ${this.formatSshDisplay(env)}\n` : 'SSH: no configurado (solo local)\n') +
-      `Modo: ${taskMode === 'code' ? 'programación' : taskMode === 'remote' ? 'supervisión/SSH' : 'código + servidor'}\n\n` +
+      `Modo: ${modeLabel}\n\n` +
+      (githubContext ? `═══ ESTADO GIT/GITHUB ═══\n${githubContext}\n\n` : '') +
       `═══ PROYECTO ═══\n` +
       `Ruta: ${rootPath}\n` +
       `Tipo: ${profile.type}\n` +
@@ -909,6 +1015,8 @@ export class LocalAgent {
     entryPoints:  string[],
     model?:       string,
     webContext = '',
+    githubContext = '',
+    projectName = 'proyecto',
     onProgress?:  (msg: string) => void
   ): Promise<AgentResult> {
     const contextBlock = Object.entries(fileContents)
@@ -922,11 +1030,11 @@ export class LocalAgent {
     const env = this.buildEnvironmentProfile();
     const taskMode = this.classifyTask(userPrompt);
     const baseUserMessage = this.buildAgentUserMessage(
-      userPrompt, rootPath, profile, env, taskMode, contextBlock, webContext
+      userPrompt, rootPath, profile, env, taskMode, contextBlock, webContext, githubContext
     );
 
     const attempts = [0, 1, 2];
-    let lastResult: AgentResult = { explanation: '', actions: [], commands: [] };
+    let lastResult: AgentResult = { explanation: '', actions: [], commands: [], githubTools: [] };
 
     for (const attempt of attempts) {
       const strict = attempt > 0;
@@ -934,13 +1042,15 @@ export class LocalAgent {
         onProgress?.('🔄 Ollama no generó respuesta válida; reintentando con prompt estricto...');
       }
       const messages: { role: 'system' | 'user'; content: string }[] = [
-        { role: 'system', content: this.buildAgentSystemPrompt(strict, profile, env, taskMode) },
+        { role: 'system', content: this.buildAgentSystemPrompt(strict, profile, env, taskMode, githubContext) },
         { role: 'user',   content: baseUserMessage },
       ];
 
       if (attempt === 1) {
         const archHint = profile.architecture?.summary ?? '';
-        const retryHint = taskMode === 'remote'
+        const retryHint = taskMode === 'github'
+          ? `CORRECCIÓN: emite GITHUB: PUBLICAR, GITHUB: COMMIT_PUSH o GITHUB: STATUS según la petición. Sin decir al usuario que lo haga manualmente.`
+          : taskMode === 'remote'
           ? `CORRECCIÓN: emite COMANDO(s) de diagnóstico` +
             (env.sshTarget ? ` con ssh a ${env.sshTarget}` : '') +
             ` y EXPLICACION con hallazgos. Sin .md.`
@@ -965,7 +1075,10 @@ export class LocalAgent {
               `ACCION: CREAR | RUTA: ${f}/.gitkeep | MOTIVO: carpeta\n<<CONTENIDO>>\n# ${f}\n<<FIN>>\n`
             ).join('\n') + '\n'
           : '';
-        const template = taskMode === 'remote'
+        const template = taskMode === 'github'
+          ? `EXPLICACION:\nPublicando en GitHub.\n\n` +
+            `GITHUB: PUBLICAR | REPO: ${projectName} | PRIVADO: no | MOTIVO: publicar proyecto\n`
+          : taskMode === 'remote'
           ? `EXPLICACION:\nDiagnóstico del servidor.\n\n` +
             `COMANDO: ${sshPrefix ? `${sshPrefix} "uptime && df -h && free -m"` : 'uptime && df -h && free -m'} | MOTIVO: supervisión\n<<FIN>>\n`
           : profile.moduleToCreate
@@ -985,10 +1098,14 @@ export class LocalAgent {
         model
       );
 
-      lastResult = this.parseAgentResponse(fullResponse, userPrompt, entryPoints, rootPath);
+      lastResult = this.parseAgentResponse(fullResponse, userPrompt, entryPoints, rootPath, projectName);
       const refused = this.isRefusalResponse(lastResult.explanation);
-      const needsWork = this.looksLikeImplementationTask(userPrompt);
-      const hasWork = lastResult.actions.length > 0 || lastResult.commands.length > 0;
+      const needsWork = taskMode === 'github'
+        ? this.looksLikeGitHubTask(userPrompt)
+        : this.looksLikeImplementationTask(userPrompt);
+      const hasWork = lastResult.actions.length > 0 ||
+        lastResult.commands.length > 0 ||
+        lastResult.githubTools.length > 0;
       const moduleOk = !profile.moduleToCreate ||
         lastResult.actions.some((a) => a.filePath.includes(profile.moduleToCreate!));
       const foldersOk = this.foldersCovered(
@@ -1023,13 +1140,15 @@ export class LocalAgent {
     raw: string,
     userPrompt: string,
     entryPoints: string[],
-    rootPath: string
+    rootPath: string,
+    projectName = 'proyecto'
   ): AgentResult {
-    const explanationMatch = raw.match(/EXPLICACI[OÓ]N:\s*([\s\S]*?)(?=ACCION:|COMANDO:|$)/i);
+    const explanationMatch = raw.match(/EXPLICACI[OÓ]N:\s*([\s\S]*?)(?=ACCION:|COMANDO:|GITHUB:|$)/i);
     const explanation      = explanationMatch ? explanationMatch[1].trim() : raw.trim();
 
-    const actions  = this.parseFileActions(raw);
-    const commands = this.parseCommandActions(raw);
+    const actions      = this.parseFileActions(raw);
+    const commands     = this.parseCommandActions(raw);
+    const githubTools  = this.parseGitHubToolActions(raw);
 
     if (actions.length === 0) {
       actions.push(...this.parseMarkdownFileFallback(raw));
@@ -1042,12 +1161,150 @@ export class LocalAgent {
     const sanitized = this.sanitizeFileActions(actions, userPrompt, entryPoints, rootPath);
     const withFolders = this.injectFolderCreateActions(sanitized, userPrompt);
     const withCommands = this.injectFolderCommands(commands, userPrompt);
+    const withGitHub = this.injectGitHubToolActions(githubTools, userPrompt, projectName);
 
     return {
       explanation,
-      actions:  withFolders,
-      commands: withCommands,
+      actions:     withFolders,
+      commands:    withCommands,
+      githubTools: withGitHub,
     };
+  }
+
+  private parseGitHubToolActions(raw: string): GitHubToolAction[] {
+    const actions: GitHubToolAction[] = [];
+    const lineRegex = /GITHUB:\s*(PUBLICAR|COMMIT_PUSH|STATUS)\s*(.+?)(?=\n|$)/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = lineRegex.exec(raw)) !== null) {
+      const [, tipoRaw, rest] = match;
+      const tipo = tipoRaw.toUpperCase();
+      const parts = rest.split('|').map((p) => p.trim()).filter(Boolean);
+      const fields: Record<string, string> = {};
+
+      for (const part of parts) {
+        const kv = part.match(/^([\wÁÉÍÓÚáéíóú]+):\s*(.+)$/i);
+        if (kv) {
+          fields[kv[1].toUpperCase()] = kv[2].trim().replace(/^["']|["']$/g, '');
+        }
+      }
+
+      const reason = fields.MOTIVO ?? fields.RAZON ?? 'Acción GitHub del agente';
+
+      if (tipo === 'PUBLICAR') {
+        actions.push({
+          type:      'publish',
+          repoName:  fields.REPO ?? fields.NOMBRE,
+          isPrivate: /^(s[ií]|yes|true|1)$/i.test(fields.PRIVADO ?? fields.PRIVATE ?? 'no'),
+          reason,
+        });
+      } else if (tipo === 'COMMIT_PUSH') {
+        actions.push({
+          type:    'commit_push',
+          message: fields.MENSAJE ?? fields.MESSAGE ?? fields.MSG,
+          reason,
+        });
+      } else if (tipo === 'STATUS') {
+        actions.push({ type: 'status', reason });
+      }
+    }
+
+    return actions;
+  }
+
+  /** Si el usuario pidió GitHub y Ollama no emitió GITHUB:, inyecta la acción. */
+  private injectGitHubToolActions(
+    tools: GitHubToolAction[],
+    userPrompt: string,
+    projectName: string
+  ): GitHubToolAction[] {
+    if (!this.github) { return tools; }
+
+    const result = [...tools];
+
+    const wantsPublish =
+      /\b(publica(?:r)?|sube(?:r)?|subir|crea(?:r)?)\b.*\b(github|repositorio|repo)\b/i.test(userPrompt) ||
+      /\b(github|repositorio)\b.*\b(publica(?:r)?|sube(?:r)?|crea(?:r)?)\b/i.test(userPrompt);
+
+    if (wantsPublish && !result.some((t) => t.type === 'publish')) {
+      result.push({
+        type:      'publish',
+        repoName:  projectName,
+        isPrivate: /\b(privad[oa]|private)\b/i.test(userPrompt),
+        reason:    'Publicar en GitHub (auto-inyectado)',
+      });
+    }
+
+    const wantsCommitPush =
+      /\b(commit|push|sube(?:r)?\s+(?:los\s+)?cambios|subir\s+cambios)\b/i.test(userPrompt) &&
+      !/\b(solo\s+status|git\s+status|estado\s+git)\b/i.test(userPrompt);
+
+    if (wantsCommitPush && !result.some((t) => t.type === 'commit_push')) {
+      const msgMatch = userPrompt.match(/(?:mensaje|message)\s+["']([^"']+)["']/i) ??
+        userPrompt.match(/commit\s+["']([^"']+)["']/i);
+      result.push({
+        type:    'commit_push',
+        message: msgMatch?.[1] ?? 'Update from Local Copilot',
+        reason:  'Commit y push (auto-inyectado)',
+      });
+    }
+
+    if (/\b(git\s+status|estado\s+(?:de\s+)?git|cambios\s+pendientes)\b/i.test(userPrompt) &&
+        !result.some((t) => t.type === 'status')) {
+      result.push({ type: 'status', reason: 'Git status (auto-inyectado)' });
+    }
+
+    return result;
+  }
+
+  private async executeGitHubTools(
+    tools: GitHubToolAction[],
+    rootPath: string,
+    projectName: string,
+    onProgress: (msg: string) => void
+  ): Promise<void> {
+    if (!this.github) { return; }
+
+    for (const tool of tools) {
+      onProgress(`🐙 ${tool.type}: ${tool.reason}`);
+      try {
+        let ghResult;
+        switch (tool.type) {
+          case 'publish':
+            ghResult = await this.github.publishForAgent(
+              rootPath,
+              tool.repoName ?? projectName,
+              tool.isPrivate ?? false
+            );
+            break;
+          case 'commit_push':
+            ghResult = await this.github.commitAndPushForAgent(
+              rootPath,
+              tool.message ?? 'Update from Local Copilot'
+            );
+            break;
+          case 'status':
+            ghResult = await this.github.gitStatusForAgent(rootPath);
+            break;
+        }
+        if (ghResult) {
+          const icon = ghResult.ok ? '✅' : '❌';
+          onProgress(`${icon} ${ghResult.message}`);
+          if (ghResult.url) {
+            onProgress(`🔗 ${ghResult.url}`);
+          }
+          this.outputChannel.appendLine(`[GITHUB ${tool.type}] ${ghResult.message}`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        onProgress(`❌ GitHub error: ${msg}`);
+        this.outputChannel.appendLine(`[GITHUB error] ${msg}`);
+      }
+    }
+
+    if (tools.length > 0) {
+      this.outputChannel.show(true);
+    }
   }
 
   private parseFileActions(raw: string): FileAction[] {
@@ -1419,7 +1676,8 @@ export class LocalAgent {
 
     const parts = [
       result.actions.length > 0 ? `${result.actions.length} archivo(s)` : '',
-      result.commands.length > 0 ? `${result.commands.length} comando(s)` : ''
+      result.commands.length > 0 ? `${result.commands.length} comando(s)` : '',
+      result.githubTools.length > 0 ? `${result.githubTools.length} acción(es) GitHub` : '',
     ].filter(Boolean);
 
     const confirmMessage = `¿Permitir que el agente aplique ${parts.join(' y ')} al proyecto?`;
