@@ -202,9 +202,8 @@ export class OllamaClient {
   }
 
   /**
-   * Resuelve el modo Auto:
-   * - Sin internet → Ollama local
-   * - Con internet → primera API con clave configurada
+   * Resuelve el modo Auto: prioriza Ollama local si hay modelos instalados.
+   * Sin Ollama y con +Internet activo → primera API con clave configurada.
    */
   async resolveAutoProvider(): Promise<ProviderName> {
     if (this.provider !== 'auto') {
@@ -212,25 +211,37 @@ export class OllamaClient {
       return this.provider;
     }
 
-    if (!this.useInternet) {
+    const installed = await this.getInstalledOllamaModels();
+    if (installed.length > 0) {
       this.autoResolvedProvider = 'ollama';
       return 'ollama';
     }
 
-    const picked = this.pickFirstConfiguredInternetProvider();
-    this.autoResolvedProvider = picked ?? 'groq';
-    return this.autoResolvedProvider;
+    if (this.useInternet) {
+      const picked = this.pickFirstConfiguredInternetProvider();
+      this.autoResolvedProvider = picked ?? 'groq';
+      return this.autoResolvedProvider;
+    }
+
+    this.autoResolvedProvider = 'ollama';
+    return 'ollama';
   }
 
   getEffectiveProvider(): ProviderName {
-    if (!this.useInternet) {
-      return 'ollama';
-    }
     return this.provider === 'auto' ? this.autoResolvedProvider : this.provider;
   }
 
+  /** Internet activo para APIs web, o búsqueda web sobre Ollama local. */
   isEffectiveInternetMode(): boolean {
-    return this.useInternet;
+    const effective = this.getEffectiveProvider();
+    if (this.isInternetProvider(effective)) {
+      return true;
+    }
+    return this.useInternet && effective === 'ollama';
+  }
+
+  usesRemoteApi(): boolean {
+    return this.isInternetProvider(this.getEffectiveProvider());
   }
 
   getBrowserChatUrl(): string {
@@ -282,18 +293,7 @@ export class OllamaClient {
       // Ollama no disponible
     }
 
-    if (useInternet) {
-      // DuckDuckGo AI - GRATIS sin API key
-      if (effective === 'duckduckgo') {
-        this.connected = true;
-        return withMeta({
-          ok: true,
-          models: ['gpt-4o-mini', 'claude-3-haiku', 'llama-3.3-70b', 'mixtral-8x7b'],
-          provider: 'duckduckgo',
-          message: 'Activa +Internet y configura una API en ⚙️ (Groq, Gemini, etc.).',
-        });
-      }
-
+    if (this.isInternetProvider(effective)) {
       if (effective === 'gemini') {
         if (!this.geminiApiKey) {
           this.connected = false;
@@ -398,11 +398,16 @@ export class OllamaClient {
       const parsed = JSON.parse(data);
       const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
       this.connected = true;
+      const webNote = this.useInternet ? ' + búsqueda web' : '';
       return withMeta({
         ok: true,
         models,
         provider: 'ollama',
-        message: autoMode ? 'Auto → Ollama local detectado' : undefined,
+        message: autoMode
+          ? `Auto → Ollama local${webNote}`
+          : this.useInternet
+            ? `Ollama local${webNote}`
+            : undefined,
       });
     } catch {
       this.connected = false;
@@ -410,8 +415,8 @@ export class OllamaClient {
         ok: false,
         models: [],
         provider: 'ollama',
-        message: autoMode && useInternet
-          ? 'Configura una API en ⚙️ para usar internet'
+        message: autoMode && this.useInternet
+          ? 'Sin Ollama local. Instala Ollama o elige una API web y configura la clave en ⚙️.'
           : 'No se detecta Ollama. Ejecuta "ollama serve" en tu terminal.',
       });
     }
@@ -489,49 +494,40 @@ export class OllamaClient {
     this.refreshConfig();
     await this.resolveAutoProvider();
     const effective = this.getEffectiveProvider();
-    const useInternet = this.isEffectiveInternetMode();
     const useModel = model ?? this.getConfig('completionModel', 'codellama:13b');
 
-    if (useInternet && effective === 'duckduckgo') {
-      return await this.fetchDuckDuckGoChat([{ role: 'user', content: prompt }]);
-    }
-
-    if (useInternet && effective === 'gemini') {
-      const response = await this.fetchGeminiChat(
-        [{ role: 'user', content: prompt }],
-        useModel,
-        true
-      );
-      return response;
-    }
-
-    if (useInternet && effective === 'openrouter') {
-      const response = await this.fetchOpenRouterChat(
-        [{ role: 'user', content: prompt }],
-        useModel,
-        true
-      );
-      return response;
-    }
-
-    if (useInternet && effective === 'groq') {
-      return await this.fetchGroqChat([{ role: 'user', content: prompt }], useModel);
-    }
-
-    if (useInternet && effective === 'cohere') {
-      return await this.fetchCohereChat([{ role: 'user', content: prompt }], useModel);
-    }
-
-    if (useInternet && effective === 'together') {
-      return await this.fetchTogetherChat([{ role: 'user', content: prompt }], useModel);
-    }
-
-    if (useInternet && effective === 'cerebras') {
-      return await this.fetchCerebrasChat([{ role: 'user', content: prompt }], useModel);
-    }
-
-    if (useInternet && effective === 'huggingface') {
-      return await this.fetchHuggingFaceChat([{ role: 'user', content: prompt }], useModel);
+    if (this.isInternetProvider(effective)) {
+      if (effective === 'gemini') {
+        const response = await this.fetchGeminiChat(
+          [{ role: 'user', content: prompt }],
+          useModel,
+          true
+        );
+        return response;
+      }
+      if (effective === 'openrouter') {
+        const response = await this.fetchOpenRouterChat(
+          [{ role: 'user', content: prompt }],
+          useModel,
+          true
+        );
+        return response;
+      }
+      if (effective === 'groq') {
+        return await this.fetchGroqChat([{ role: 'user', content: prompt }], useModel);
+      }
+      if (effective === 'cohere') {
+        return await this.fetchCohereChat([{ role: 'user', content: prompt }], useModel);
+      }
+      if (effective === 'together') {
+        return await this.fetchTogetherChat([{ role: 'user', content: prompt }], useModel);
+      }
+      if (effective === 'cerebras') {
+        return await this.fetchCerebrasChat([{ role: 'user', content: prompt }], useModel);
+      }
+      if (effective === 'huggingface') {
+        return await this.fetchHuggingFaceChat([{ role: 'user', content: prompt }], useModel);
+      }
     }
 
     const body = JSON.stringify({
@@ -572,53 +568,25 @@ export class OllamaClient {
     this.refreshConfig();
     await this.resolveAutoProvider();
     const effective = this.getEffectiveProvider();
-    const useInternet = this.isEffectiveInternetMode();
     const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
 
-    if (useInternet && effective === 'duckduckgo') {
-      const response = await this.fetchDuckDuckGoChat(messages);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'gemini') {
-      const response = await this.fetchGeminiChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'openrouter') {
-      const response = await this.fetchOpenRouterChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'groq') {
-      const response = await this.fetchGroqChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'cohere') {
-      const response = await this.fetchCohereChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'together') {
-      const response = await this.fetchTogetherChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'cerebras') {
-      const response = await this.fetchCerebrasChat(messages, useModel);
-      this.emitChunks(response, onToken);
-      return response;
-    }
-
-    if (useInternet && effective === 'huggingface') {
-      const response = await this.fetchHuggingFaceChat(messages, useModel);
+    if (this.isInternetProvider(effective)) {
+      let response = '';
+      if (effective === 'gemini') {
+        response = await this.fetchGeminiChat(messages, useModel);
+      } else if (effective === 'openrouter') {
+        response = await this.fetchOpenRouterChat(messages, useModel);
+      } else if (effective === 'groq') {
+        response = await this.fetchGroqChat(messages, useModel);
+      } else if (effective === 'cohere') {
+        response = await this.fetchCohereChat(messages, useModel);
+      } else if (effective === 'together') {
+        response = await this.fetchTogetherChat(messages, useModel);
+      } else if (effective === 'cerebras') {
+        response = await this.fetchCerebrasChat(messages, useModel);
+      } else if (effective === 'huggingface') {
+        response = await this.fetchHuggingFaceChat(messages, useModel);
+      }
       this.emitChunks(response, onToken);
       return response;
     }
@@ -1128,8 +1096,9 @@ export class OllamaClient {
   }
 
   /** Obtener si el modo internet está activo */
+  /** Toggle +Internet del panel (búsqueda web en Ollama local). */
   isInternetEnabled(): boolean {
-    return this.isEffectiveInternetMode();
+    return this.useInternet;
   }
 
   /** Obtener el proveedor configurado por el usuario */
