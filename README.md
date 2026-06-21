@@ -1,245 +1,258 @@
-# Local Copilot
-
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║   ██╗      ██████╗  ██████╗ █████╗ ██╗          ██████╗ ██████╗ ██████╗      ║
-║   ██║     ██╔═══██╗██╔════╝██╔══██╗██║         ██╔════╝██╔═══██╗██╔══██╗     ║
-║   ██║     ██║   ██║██║     ███████║██║         ██║     ██║   ██║██████╔╝     ║
-║   ██║     ██║   ██║██║     ██╔══██║██║         ██║     ██║   ██║██╔═══╝      ║
-║   ███████╗╚██████╔╝╚██████╗██║  ██║███████╗    ╚██████╗╚██████╔╝██║          ║
-║   ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝     ╚═════╝ ╚═════╝ ╚═╝          ║
-║                                                                              ║
-║                    🤖 Tu Copilot de código 100% GRATIS 🤖                    ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-```
+# Local Copilot — IA local para VS Code
 
 <p align="center">
-  🤖 <strong>LOCAL COPILOT</strong> 🤖
+  <strong>Autocompletado · Chat · Agente que programa · GitHub</strong><br>
+  <em>Gratis, privado con Ollama, o con +Internet para investigar y codificar</em>
 </p>
 
 <p align="center">
-  <strong>Autocompletado inteligente + Chat con IA + Agente autónomo</strong><br>
-  <em>Funciona SIN internet con Ollama o CON internet usando IAs gratuitas</em>
+  <a href="https://github.com/pilahito/ollama-copilot-vscode/releases/latest">Última release</a> •
+  <a href="#instalación">Instalación</a> •
+  <a href="#modo-agente">Agente</a> •
+  <a href="#modo-internet">+Internet</a> •
+  <a href="#configuración">Configuración</a>
 </p>
 
 <p align="center">
-  <a href="#-instalación">Instalación</a> •
-  <a href="#-proveedores-de-ia">Proveedores</a> •
-  <a href="#-funcionalidades">Funcionalidades</a> •
-  <a href="#-github">GitHub</a> •
-  <a href="#-comandos">Comandos</a>
+  <img src="https://img.shields.io/github/v/release/pilahito/ollama-copilot-vscode?label=versión" alt="versión">
+  <img src="https://img.shields.io/badge/licencia-MIT-blue" alt="MIT">
+  <img src="https://img.shields.io/badge/VS%20Code-%5E1.85-007ACC" alt="VS Code">
+  <img src="https://img.shields.io/badge/Ollama-compatible-green" alt="Ollama">
 </p>
 
 ---
 
-## 🎯 ¿Qué es Local Copilot?
+## ¿Qué es?
 
-**Local Copilot** es una extensión de VS Code que te da las mismas funcionalidades que GitHub Copilot pero **completamente gratis**. Puedes usarla:
+**Local Copilot** es una extensión de VS Code que replica lo esencial de GitHub Copilot **sin pagar suscripción**:
 
-| Modo | Descripción | ¿Necesita internet? |
-|------|-------------|---------------------|
-| 🏠 **Local** | Usa Ollama en tu PC | ❌ No |
-| 🌐 **Internet** | Usa IAs gratuitas en la nube | ✅ Sí |
+| Función | Qué hace |
+|---------|----------|
+| ⚡ **Autocompletado** | Sugerencias inline mientras escribes |
+| 💬 **Chat** | Preguntas, explicaciones, snippets |
+| 🤖 **Agente** | Lee tu proyecto, **investiga** (con +Internet), **escribe archivos** y ejecuta `git`/`npm` |
+| 🐙 **GitHub** | Conectar cuenta, publicar y clonar repos |
+
+Todo corre en tu máquina con **Ollama**, o puedes activar **+Internet** para buscar documentación actualizada antes de programar.
 
 ---
 
-## 🚀 Instalación
+## Interfaz
 
-### Opción 1: Desde el Marketplace (recomendado)
 ```
-1. Abre VS Code
-2. Ve a Extensiones (Ctrl+Shift+X)
-3. Busca "Local Copilot"
-4. Instala
+[Dock izq.]   [Explorador / Git]   [Editor]   [Chat IA →]
+   🤖 Local Copilot                 tu código   panel derecho
+   📁 Archivos
+   🔀 Git
 ```
 
-### Opción 2: Manual
+- El **icono** de Local Copilot permanece en la barra de actividad (dock).
+- El **chat** se abre en el **panel derecho**, como Copilot.
+- **Archivos y Git** siguen a la izquierda.
+
+---
+
+## Instalación
+
+### Opción A — Release (recomendado)
+
+1. Descarga el `.vsix` de la [última release](https://github.com/pilahito/ollama-copilot-vscode/releases/latest).
+2. En VS Code: **Extensiones** → menú `⋯` → **Instalar desde VSIX…**
+3. Recarga la ventana (`Ctrl+Shift+P` → *Recargar ventana*).
+
+```bash
+# O por terminal
+gh release download --repo pilahito/ollama-copilot-vscode --pattern "*.vsix"
+code --install-extension local-copilot-*.vsix --force
+```
+
+### Opción B — Compilar desde código
+
 ```bash
 git clone https://github.com/pilahito/ollama-copilot-vscode.git
 cd ollama-copilot-vscode
 npm install
 npm run compile
-npx vsce package --allow-missing-repository
-code --install-extension local-copilot-1.0.0.vsix
+npx @vscode/vsce package --no-dependencies
+code --install-extension local-copilot-*.vsix --force
 ```
 
----
+### Ollama (modo local)
 
-## 🤖 Proveedores de IA y Selector de Modelos
-
-Puedes elegir **tú** el modelo y si usar internet o no:
-
-### Selector de modelos
-- En el chat lateral verás el desplegable **📦 Modelo**.
-- Usa el comando: **Local: Elegir modelo de IA (de los detectados)**
-- El selector se mantiene visible aunque cambies entre "Local" y "+Internet".
-- El **agente** usa automáticamente el modelo que elijas.
-
-### Con / sin internet
-- **Local (Ollama)**: sin internet, gratis, privado.
-- **+Internet**: DuckDuckGo (sin clave), Groq, Cerebras, Together, etc.
-
-Comando rápido: **Local: Usar IA con internet (DuckDuckGo gratis)**
-
-Modelos instalados se detectan automáticamente con `ollama list`.
-
-### Recomendaciones según tu PC
-- Recomendaciones conservadoras (modelos pequeños 1.5b-7b para PCs normales).
-- En "Ver IAs recomendadas" primero muestra **tus modelos instalados reales**.
-
-## 🤖 Proveedores de IA (detalle)
-
-### 🏠 Modo LOCAL (sin internet)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  OLLAMA - IA 100% local en tu ordenador                     │
-├─────────────────────────────────────────────────────────────┤
-│  ✅ Gratis para siempre                                     │
-│  ✅ Privacidad total (datos en tu PC)                       │
-│  ✅ Sin límites de uso                                      │
-│  ✅ Funciona sin internet                                   │
-│                                                             │
-│  Modelos recomendados:                                      │
-│  • qwen2.5-coder:7b  (autocompletado - rápido)             │
-│  • qwen2.5-coder:14b (chat - más inteligente)              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Instalar Ollama:**
 ```bash
-# Linux
-curl -fsSL https://ollama.com/install.sh | sh
-
-# macOS
-brew install ollama
-
-# Windows: Descarga desde https://ollama.com/download
-```
-
-**Descargar modelos:**
-```bash
-ollama pull qwen2.5-coder:7b    # Para autocompletado
-ollama pull qwen2.5-coder:14b   # Para chat
-ollama serve                     # Iniciar servidor
+curl -fsSL https://ollama.com/install.sh | sh   # Linux
+ollama pull qwen2.5-coder:7b                    # autocompletado
+ollama pull qwen2.5-coder:14b                   # chat y agente
+ollama serve
 ```
 
 ---
 
-### 🌐 Modo INTERNET (IAs gratuitas en la nube)
+## Modo Agente
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        PROVEEDORES GRATUITOS                                │
-├──────────────┬─────────────────────┬────────────────┬───────────────────────┤
-│  Proveedor   │  Modelo por defecto │  Velocidad     │  Obtener API Key      │
-├──────────────┼─────────────────────┼────────────────┼───────────────────────┤
-│  🚀 Groq     │  llama-3.3-70b      │  ⚡ Ultra       │  console.groq.com     │
-│  🧠 Cerebras │  llama-3.3-70b      │  ⚡ Récord      │  cerebras.ai          │
-│  🤝 Together │  Llama-3.3-70B-Free │  🚀 Rápido     │  together.ai          │
-│  💎 Gemini   │  gemini-2.0-flash   │  🚀 Rápido     │  aistudio.google.com  │
-│  🔷 Cohere   │  command-r-plus     │  🚀 Rápido     │  dashboard.cohere.com │
-│  🤗 HuggingF │  Llama-3.2-11B      │  🐢 Normal     │  huggingface.co       │
-│  🔀 OpenRout │  gpt-4o-mini        │  🚀 Rápido     │  openrouter.ai        │
-└──────────────┴─────────────────────┴────────────────┴───────────────────────┘
+El agente **no es un chat**: analiza tu carpeta abierta y **aplica cambios**.
+
+### Flujo
+
+```mermaid
+flowchart LR
+  A[Petición] --> B[Escanear proyecto]
+  B --> C{+Internet?}
+  C -->|Sí| D[Investigar en la web]
+  C -->|No| E[Leer archivos]
+  D --> E
+  E --> F[Generar código]
+  F --> G[Escribir archivos]
+  G --> H[Ejecutar git/npm]
 ```
 
-**Configuración rápida:**
-```
-1. Ve a Configuración de VS Code (Ctrl+,)
-2. Busca "Local Copilot"
-3. Activa "Use Internet" → true
-4. Selecciona tu proveedor favorito
-5. Pega tu API Key
-```
+### Cómo usarlo
+
+1. Abre una **carpeta de proyecto** en VS Code.
+2. En Local Copilot elige **Agente** (no Chat).
+3. Escribe una orden clara:
+
+> Modifica `src/index.js` y añade manejo de errores al bot de Discord.
+
+> Supervisa el proyecto y corrige lo que esté mal.
+
+4. Verás progreso: escaneo → lectura → (investigación web) → archivos modificados.
+
+### Buenas peticiones
+
+| ✅ Funciona mejor | ❌ Evita |
+|------------------|---------|
+| "Modifica `package.json` y arregla las dependencias" | "¿Qué opinas del código?" |
+| "Crea `.gitignore` y haz commit" | Preguntas muy vagas |
+| "Investiga discord.js v14 e implementa slash commands" | Solo "supervisa" sin contexto |
+
+### Modelo recomendado
+
+- **Agente / Chat:** `qwen2.5-coder:14b` (o superior)
+- **Autocompletado:** `qwen2.5-coder:7b`
 
 ---
 
-## ✨ Funcionalidades
+## Modo +Internet
 
-| Función | Descripción |
-|---------|-------------|
-| 💬 **Chat** | Pregunta dudas, explica errores, genera código |
-| ⚡ **Autocompletado** | Sugerencias mientras escribes (como Copilot) |
-| 🤖 **Agente** | Analiza y modifica archivos automáticamente |
-| 🐙 **GitHub** | Publica proyectos, clona repos, ve tu cuenta |
+Con el toggle **+Internet** activo:
+
+| Modo | Comportamiento |
+|------|----------------|
+| **Chat** | Busca en la web y responde con contexto actualizado |
+| **Agente** | Investiga **antes** de programar (docs, ejemplos, tutoriales) |
+
+El agente muestra:
+
+```
+🌐 +Internet activo: investigando en la web...
+📚 5 resultado(s) web añadidos al agente
+⚙️ Generando código y aplicando cambios...
+```
+
+La búsqueda usa DuckDuckGo (gratis, sin API key). Para IAs en la nube (Groq, Gemini, etc.) configura las API keys en ⚙️.
 
 ---
 
-## 📋 Comandos
+## Proveedores de IA
 
-Abre la paleta con `Ctrl+Shift+P` y escribe "Local":
+| Modo | Proveedor | Internet | API Key |
+|------|-----------|----------|---------|
+| 🏠 Local | **Ollama** | Opcional (+Internet) | No |
+| 🌐 Nube | Groq, Cerebras, Gemini, Together, Cohere, HuggingFace, OpenRouter | Sí | Sí (gratis con límites) |
+| ⚙️ Auto | Ollama si hay modelos; si no, primera API con clave | Según config | Según proveedor |
+
+**Selector en el panel:** izquierda = Local / +Internet · derecha = proveedor y modelo.
+
+---
+
+## GitHub
+
+| Comando | Acción |
+|---------|--------|
+| `Local: Conectar con GitHub` | Inicia sesión |
+| `Local: Publicar proyecto en GitHub` | Crea repo y hace push |
+| `Local: Clonar repositorio` | Clona un repo tuyo |
+| `Local: Ver mis repositorios` | Lista repos |
+
+Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
+
+> Al hacer commit en VS Code escribe un **mensaje** en el cuadro de Control de código fuente antes de confirmar.
+
+---
+
+## Comandos
+
+`Ctrl+Shift+P` → escribe **Local**:
 
 | Comando | Descripción |
 |---------|-------------|
-| `Local: Abrir Chat` | Abre el panel de chat |
-| `Local: Explicar este código` | Explica código seleccionado |
-| `Local: Arreglar este código` | Arregla código con el agente |
-| `Local: Analizar proyecto` | Analiza toda la estructura |
-| `Local: Conectar con GitHub` | Inicia sesión en GitHub |
-| `Local: Publicar en GitHub` | Sube proyecto a GitHub |
-| `Local: Clonar repositorio` | Clona un repo tuyo |
+| Abrir Chat IA | Abre el panel derecho |
+| Elegir modelo de IA | Selector de modelos Ollama |
+| Explicar / Arreglar código | Usa la selección actual |
+| Analizar proyecto | Agente sobre toda la carpeta |
+| Activar/Desactivar autocompletado | Toggle inline |
+| Conectar / Publicar / Clonar GitHub | Integración Git |
 
 ---
 
-## ⚙️ Configuración
+## Configuración
 
 | Opción | Descripción | Default |
 |--------|-------------|---------|
-| `local.provider` | Proveedor de IA | `ollama` |
-| `local.useInternet` | Usar nube | `false` |
-| `local.groqApiKey` | API Key Groq | `` |
-| `local.geminiApiKey` | API Key Gemini | `` |
-| `local.cohereApiKey` | API Key Cohere | `` |
-| `local.togetherApiKey` | API Key Together | `` |
-| `local.cerebrasApiKey` | API Key Cerebras | `` |
+| `local.provider` | `auto`, `ollama`, `groq`, `gemini`… | `auto` |
+| `local.useInternet` | Activa búsqueda web (+Internet) | `false` |
+| `local.chatModel` | Modelo para chat y agente | `qwen2.5-coder:14b` |
+| `local.completionModel` | Modelo autocompletado | `qwen2.5-coder:7b` |
+| `local.requireConfirmation` | Pedir OK antes de escribir archivos | `false` |
+| `local.agentRunTerminal` | Agente ejecuta `git`, `npm`, `gh` | `true` |
+| `local.ollamaUrl` | URL de Ollama | `http://localhost:11434` |
 
 ---
 
-## 🔑 Obtener API Keys Gratis
+## Novedades recientes
 
-| Proveedor | URL | Pasos |
-|-----------|-----|-------|
-| **Groq** ⭐ | console.groq.com | Crear cuenta → API Keys → Create |
-| **Gemini** | aistudio.google.com | Login Google → Create API Key |
-| **Cerebras** | cloud.cerebras.ai | Registrarse → API Keys |
-| **Together** | together.ai | Cuenta → Settings → API Keys |
-| **Cohere** | dashboard.cohere.com | Registrarse → API Keys |
+| Versión | Cambios principales |
+|---------|---------------------|
+| **1.0.12** | Agente +Internet investiga la web y luego programa |
+| **1.0.11** | Anti-refusal, reintento automático, Ollama optimizado para agente |
+| **1.0.10** | Icono en dock, chat en panel derecho |
+| **1.0.6** | Agente ejecuta comandos terminal y parser mejorado |
+| **1.0.5** | GitHub fiable con `gh` CLI y token |
+
+[Ver todas las releases →](https://github.com/pilahito/ollama-copilot-vscode/releases)
 
 ---
 
-## 📊 Comparativa
+## Desarrollo
 
-```
-┌─────────────┬───────────┬──────────┬─────────────┐
-│ Proveedor   │ Velocidad │ Calidad  │ Límite      │
-├─────────────┼───────────┼──────────┼─────────────┤
-│ Ollama      │ ⚡⚡⚡      │ ⭐⭐⭐⭐   │ Sin límite │
-│ Groq        │ ⚡⚡⚡⚡⚡    │ ⭐⭐⭐⭐⭐  │ Generoso  │
-│ Cerebras    │ ⚡⚡⚡⚡⚡    │ ⭐⭐⭐⭐   │ Generoso   │
-│ Gemini      │ ⚡⚡⚡⚡     │ ⭐⭐⭐⭐⭐  │ 60/min    │
-│ Together    │ ⚡⚡⚡      │ ⭐⭐⭐⭐⭐  │ Créditos  │
-└─────────────┴───────────┴──────────┴─────────────┘
+```bash
+npm run compile    # compilar
+npm run watch      # compilar en caliente
+npx @vscode/vsce package --no-dependencies
 ```
 
+Estructura principal:
+
+```
+src/
+  extension.ts          # entrada y comandos
+  chatViewProvider.ts   # UI del chat
+  agent.ts              # agente autónomo
+  ollamaClient.ts       # Ollama + APIs + búsqueda web
+  githubService.ts      # Git / GitHub
+  dockViewProvider.ts   # icono dock → abre chat derecha
+```
+
 ---
 
-## 📜 Licencia
+## Licencia
 
-MIT License © 2026 [DavidPilahito7](https://github.com/pilahito)
+MIT © 2026 [DavidPilahito7](https://github.com/pilahito)
 
 ---
 
 <p align="center">
-  <strong>⭐ Si te gusta, dale una estrella en GitHub ⭐</strong>
+  <a href="https://github.com/pilahito/ollama-copilot-vscode">⭐ Star en GitHub</a> ·
+  <a href="https://github.com/pilahito/ollama-copilot-vscode/issues">Reportar bug</a>
 </p>
-
-<p align="center
-```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║   🐙 GitHub: github.com/pilahito/ollama-copilot-vscode                       ║
-║   🐛 Issues: github.com/pilahito/ollama-copilot-vscode/issues                ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-```
