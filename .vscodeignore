@@ -9,6 +9,7 @@ src/**
 api-server/**
 plugins/**
 install.sh
+scripts/**
 esbuild.js
 tsconfig.json
 ollama-copilot-vscode.zip

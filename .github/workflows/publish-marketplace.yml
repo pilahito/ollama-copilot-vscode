@@ -24,4 +24,9 @@ jobs:
       - name: Publish extension
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx @vscode/vsce publish --no-dependencies
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::Falta el secreto VSCE_PAT. Ejecuta: ./scripts/first-publish.sh"
+            exit 1
+          fi
+          npx @vscode/vsce publish --no-dependencies
