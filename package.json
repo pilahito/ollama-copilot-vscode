@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot de código gratuito que usa tus IAs locales (Ollama) para autocompletado, chat y reparación autónoma de código.",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -220,6 +220,11 @@
           "type": "boolean",
           "default": false,
           "description": "Si está activado, el modo agente pide confirmación antes de escribir archivos. Si está desactivado, aplica cambios automáticamente."
+        },
+        "local.agentRunTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Permite que el modo agente ejecute comandos de terminal (git, gh, npm, etc.)."
         },
         "local.enableAutomation": {
           "type": "boolean",

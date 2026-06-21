@@ -21,9 +21,13 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import * as vscode from 'vscode';
 import * as path   from 'path';
 import { OllamaClient } from './ollamaClient';
+
+const execFileAsync = promisify(execFile);
 
 // ── Tipos públicos ────────────────────────────────────────────────────────────
 
@@ -34,9 +38,15 @@ export interface FileAction {
   reason:    string;
 }
 
+export interface CommandAction {
+  command: string;
+  reason:  string;
+}
+
 export interface AgentResult {
   explanation: string;
   actions:     FileAction[];
+  commands:    CommandAction[];
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -117,15 +127,26 @@ export class LocalAgent {
     onProgress('⚙️ Generando la solución (esto puede tardar un poco con IA local)...');
     const result = await this.generateSolution(userPrompt, projectTree, fileContents, rootPath, model);
 
-    if (result.actions.length > 0) {
+    const hasWork = result.actions.length > 0 || result.commands.length > 0;
+
+    if (hasWork) {
       const approved = await this.requestConfirmation(result, onProgress);
       if (!approved) {
         onProgress('🚫 Cambios cancelados por el usuario.');
         return result;
       }
 
-      onProgress(`✏️ Aplicando ${result.actions.length} cambio(s) en el proyecto...`);
-      await this.applyActions(result.actions, rootPath);
+      if (result.actions.length > 0) {
+        onProgress(`✏️ Aplicando ${result.actions.length} cambio(s) en el proyecto...`);
+        await this.applyActions(result.actions, rootPath);
+      }
+
+      if (result.commands.length > 0) {
+        onProgress(`🖥️ Ejecutando ${result.commands.length} comando(s) en terminal...`);
+        await this.executeCommands(result.commands, rootPath, onProgress);
+      }
+    } else if (this.looksLikeImplementationTask(userPrompt)) {
+      onProgress('⚠️ El modelo no generó cambios. Prueba un modelo más grande (14b) o reformula la petición.');
     }
 
     onProgress('✅ Listo.');
@@ -281,7 +302,13 @@ export class LocalAgent {
       `<<CONTENIDO>>\n<código completo modificado>\n<<FIN>>\n\n` +
       `ACCION: ELIMINAR | RUTA: ruta/a/borrar.ext | MOTIVO: descripción\n` +
       `<<CONTENIDO>>\n<<FIN>>\n\n` +
-      `⚠️ Si NO necesitas modificar archivos, responde solo la EXPLICACION sin bloques ACCION.`;
+      `COMANDO: git add . | MOTIVO: preparar commit\n<<FIN>>\n\n` +
+      `COMANDO: gh repo create mi-repo --private --source=. --push | MOTIVO: publicar en GitHub\n<<FIN>>\n\n` +
+      `REGLAS DE COMANDOS:\n` +
+      `- Usa COMANDO para git, gh, npm, node cuando el usuario pida publicar, instalar, commitear o desplegar.\n` +
+      `- Solo comandos seguros de desarrollo. Nunca rm -rf / ni comandos destructivos del sistema.\n` +
+      `- Si el usuario pide CREAR, ARREGLAR, PUBLICAR o SUBIR algo, DEBES incluir ACCION y/o COMANDO.\n` +
+      `- Solo responde EXPLICACION sin ACCION/COMANDO si es una pregunta teórica sin cambios en el proyecto.`;
 
     const userMessage =
       `Petición del usuario: "${userPrompt}"\n\n` +
@@ -304,27 +331,85 @@ export class LocalAgent {
 
   // ── Parser de respuesta ───────────────────────────────────────────────────────
 
-  /** Parsea la respuesta estructurada del modelo en explicación + acciones de archivo. */
+  /** Parsea la respuesta estructurada del modelo en explicación + acciones. */
   private parseAgentResponse(raw: string): AgentResult {
-    const explanationMatch = raw.match(/EXPLICACION:\s*([\s\S]*?)(?=ACCION:|$)/);
+    const explanationMatch = raw.match(/EXPLICACION:\s*([\s\S]*?)(?=ACCION:|COMANDO:|$)/i);
     const explanation      = explanationMatch ? explanationMatch[1].trim() : raw.trim();
 
+    const actions  = this.parseFileActions(raw);
+    const commands = this.parseCommandActions(raw);
+
+    if (actions.length === 0) {
+      actions.push(...this.parseMarkdownFileFallback(raw));
+    }
+
+    return { explanation, actions, commands };
+  }
+
+  private parseFileActions(raw: string): FileAction[] {
     const actions: FileAction[] = [];
     const actionRegex =
-      /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<CONTENIDO>>([\s\S]*?)<<FIN>>/g;
+      /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<CONTENIDO>>([\s\S]*?)<<FIN>>/gi;
 
     let match: RegExpExecArray | null;
     while ((match = actionRegex.exec(raw)) !== null) {
       const [, tipoRaw, rutaRaw, motivo, contenido] = match;
       actions.push({
-        type:     ACTION_TYPE_MAP[tipoRaw] ?? 'modify',
+        type:     ACTION_TYPE_MAP[tipoRaw.toUpperCase()] ?? 'modify',
         filePath: rutaRaw.trim(),
         content:  contenido.replace(/^\n/, '').replace(/\n$/, ''),
         reason:   motivo.trim()
       });
     }
 
-    return { explanation, actions };
+    return actions;
+  }
+
+  private parseCommandActions(raw: string): CommandAction[] {
+    const commands: CommandAction[] = [];
+    const commandRegex =
+      /COMANDO:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<FIN>>/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = commandRegex.exec(raw)) !== null) {
+      const [, command, reason] = match;
+      commands.push({ command: command.trim(), reason: reason.trim() });
+    }
+
+    return commands;
+  }
+
+  /** Fallback: extrae bloques markdown con ruta en la primera línea del comentario. */
+  private parseMarkdownFileFallback(raw: string): FileAction[] {
+    const actions: FileAction[] = [];
+    const blockRegex = /```[\w]*\s*\n([\s\S]*?)```/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = blockRegex.exec(raw)) !== null) {
+      const block = match[1];
+      const pathMatch = block.match(
+        /^(?:\/\/|#|<!--)\s*(?:file:|archivo:)?\s*([^\n*]+)/im
+      );
+      if (!pathMatch) { continue; }
+
+      const filePath = pathMatch[1].trim();
+      const content  = block.replace(pathMatch[0], '').trim();
+      if (!content || !filePath) { continue; }
+
+      actions.push({
+        type:     'modify',
+        filePath,
+        content,
+        reason:   'Código generado por el agente (formato markdown)'
+      });
+    }
+
+    return actions;
+  }
+
+  private looksLikeImplementationTask(prompt: string): boolean {
+    return /\b(crea|crear|arregla|arreglar|fix|corrige|publica|publicar|sube|subir|implementa|modifica|escribe|genera|deploy|commit|push|github|git)\b/i
+      .test(prompt);
   }
 
   // ── Confirmación de acciones ───────────────────────────────────────────────
@@ -345,7 +430,12 @@ export class LocalAgent {
       return true;
     }
 
-    const confirmMessage = '¿Permitir que el agente aplique los cambios propuestos al proyecto?';
+    const parts = [
+      result.actions.length > 0 ? `${result.actions.length} archivo(s)` : '',
+      result.commands.length > 0 ? `${result.commands.length} comando(s)` : ''
+    ].filter(Boolean);
+
+    const confirmMessage = `¿Permitir que el agente aplique ${parts.join(' y ')} al proyecto?`;
 
     onProgress('⏸️ Esperando confirmación del usuario...');
 
@@ -361,6 +451,66 @@ export class LocalAgent {
       onProgress('⚠ La confirmación fue cancelada o no pudo abrirse correctamente; los cambios no se aplicarán.');
       return false;
     }
+  }
+
+  // ── Ejecución de comandos ─────────────────────────────────────────────────────
+
+  private async executeCommands(
+    commands: CommandAction[],
+    rootPath: string,
+    onProgress: (msg: string) => void
+  ): Promise<void> {
+    const allowTerminal = vscode.workspace
+      .getConfiguration('local')
+      .get('agentRunTerminal', true);
+
+    if (!allowTerminal) {
+      onProgress('⚠️ Ejecución de terminal desactivada (local.agentRunTerminal).');
+      return;
+    }
+
+    for (const { command, reason } of commands) {
+      if (!this.isAllowedCommand(command)) {
+        this.outputChannel.appendLine(`[SKIP] Comando no permitido: ${command}`);
+        onProgress(`⚠️ Comando bloqueado por seguridad: ${command}`);
+        continue;
+      }
+
+      this.outputChannel.appendLine(`[CMD] ${command} — ${reason}`);
+      onProgress(`▶ ${command}`);
+
+      try {
+        const { stdout, stderr } = await execFileAsync('bash', ['-lc', command], {
+          cwd: rootPath,
+          maxBuffer: 20 * 1024 * 1024,
+          timeout: 120_000,
+        });
+        if (stdout.trim()) { this.outputChannel.appendLine(stdout.trim()); }
+        if (stderr.trim()) { this.outputChannel.appendLine(stderr.trim()); }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.outputChannel.appendLine(`  ⚠ Error ejecutando comando: ${message}`);
+        onProgress(`⚠ Error: ${command}`);
+      }
+    }
+
+    if (commands.length > 0) {
+      this.outputChannel.show(true);
+    }
+  }
+
+  private isAllowedCommand(command: string): boolean {
+    const normalized = command.trim().toLowerCase();
+    const blocked = /\b(rm\s+-rf\s+\/|mkfs|dd\s+if=|:(){ :|:& };:)\b/;
+    if (blocked.test(normalized)) { return false; }
+
+    const allowedPrefixes = [
+      'git ', 'gh ', 'npm ', 'npx ', 'node ', 'yarn ', 'pnpm ',
+      'python ', 'python3 ', 'pip ', 'cargo ', 'go ', 'docker ',
+      'ollama ', 'mkdir ', 'cp ', 'mv ', 'touch ', 'chmod ',
+    ];
+
+    return allowedPrefixes.some(prefix => normalized.startsWith(prefix));
   }
 
   // ── Aplicación de acciones ────────────────────────────────────────────────────

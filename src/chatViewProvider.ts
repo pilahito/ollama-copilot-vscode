@@ -23,7 +23,7 @@
 
 import * as vscode from 'vscode';
 import { OllamaClient, ProviderName } from './ollamaClient';
-import { LocalAgent, FileAction } from './agent';
+import { LocalAgent, FileAction, CommandAction } from './agent';
 
 // ── Tipos de mensajes Webview ────────────────────────────────────────────────
 
@@ -201,8 +201,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
                      : '✏️';
           summary += `${icon} \`${action.filePath}\` — ${action.reason}\n`;
         }
-      } else {
-        summary += '_No fue necesario modificar archivos._';
+      }
+
+      if (result.commands.length > 0) {
+        summary += '\n**Comandos ejecutados:**\n';
+        for (const cmd of result.commands as CommandAction[]) {
+          summary += `▶ \`${cmd.command}\` — ${cmd.reason}\n`;
+        }
+      }
+
+      if (result.actions.length === 0 && result.commands.length === 0) {
+        summary += '_El agente no aplicó cambios. Usa modo **Agente** (no Chat) y pide explícitamente crear/arreglar/publicar._';
       }
 
       this.post({ type: 'response', text: summary, done: true });
