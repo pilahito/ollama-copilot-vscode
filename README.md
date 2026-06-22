@@ -240,8 +240,7 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 
 | Versión | Cambios principales |
 |---------|---------------------|
-| **1.0.36** | ReferenceLearner: GitHub, caché offline, Chat/Profesor/Agente |
-| **1.0.80+** | Intención usuario, APIs, GitHub sentido común, calidad de código |
+| **1.0.36** | ReferenceLearner, intención usuario, APIs, blueprints, UI desbloqueada, Marketplace |
 | **1.0.12** | Agente +Internet investiga la web y luego programa |
 | **1.0.11** | Anti-refusal, reintento automático, Ollama optimizado para agente |
 | **1.0.10** | Icono en dock, chat en panel derecho |

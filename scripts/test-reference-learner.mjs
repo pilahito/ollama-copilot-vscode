@@ -55,7 +55,7 @@ function buildSimilarProjectQueries(prompt, kind = 'discord-bot') {
   return [...queries].slice(0, 8);
 }
 
-console.log('\n🧪 ReferenceLearner v1.0.85\n');
+console.log('\n🧪 ReferenceLearner v1.0.36\n');
 
 const prompt = 'Crea bot Discord con música, trivia y economía modular';
 const features = extractFeatureKeywords(prompt);

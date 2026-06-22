@@ -24,7 +24,7 @@ async function main(): Promise<void> {
 
   const { detectBlueprint } = await import('../src/projectBlueprints.ts');
 
-  console.log('\n═══ Integración ReferenceLearner v1.0.85 ═══\n');
+  console.log('\n═══ Integración ReferenceLearner v1.0.36 ═══\n');
   info(`HOME temporal: ${TEST_HOME}`);
 
   const PROMPT =

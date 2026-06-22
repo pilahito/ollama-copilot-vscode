@@ -2,27 +2,40 @@
 
 ## [1.0.36] - 2026-06-23
 
-### Added
-- **ReferenceLearner**: investiga proyectos similares en GitHub con +Internet y guarda patrones en `~/.local-copilot/learned-references.json`
-- Modo **sin internet**: reutiliza caché aprendida + plantillas locales (Discord, Minecraft, ROM, extensión VS Code)
-- **Chat y Profesor** también usan referencias aprendidas (antes solo el Agente)
-- Detección de **features** (música, trivia, economía, clima, radio, Telegram…) para mejor matching de caché
-- Consultas `site:github.com` priorizadas; repos GitHub van primero en resultados
-- Módulos: `userIntent`, `apiGuidance`, `githubGuidance`, `codeQuality`, `projectBlueprints`
-- Reintento automático si el modelo genera esqueletos/TODO en lugar de código funcional
-- Scripts de prueba: `test-reference-learner.mjs`, `test-reference-integration.ts`, `test-bot-intent.mjs`
+Resumen del día: agente más inteligente, aprendizaje de referencias GitHub, UI desbloqueada y publicación lista.
+
+### Added — Aprendizaje y calidad de código
+- **ReferenceLearner**: investiga proyectos similares en GitHub con +Internet; guarda patrones en `~/.local-copilot/learned-references.json`
+- Modo **sin internet**: caché aprendida + plantillas locales (Discord, Minecraft plugin/mod, ROM Android, extensión VS Code)
+- **Chat, Profesor y Agente** usan referencias aprendidas (`gatherReferenceContext`)
+- Detección de **features** (música, trivia, economía, clima, radio, Telegram…) para matching de caché
+- Consultas `site:github.com` priorizadas; `prioritizeGitHubHits` pone repos primero
+- **userIntent**: analiza tono, urgencia, calidad exigida y prohibiciones (`.gitkeep`, esqueletos…)
+- **apiGuidance**: recomienda APIs reales (discord.js, Open Trivia DB, Open-Meteo, express…)
+- **githubGuidance**: cuándo publicar, commit o clonar con sentido común
+- **codeQuality**: rechaza esqueletos/TODO; reintento si el código no es funcional
+- **projectBlueprints**: plantillas Discord, Paper/Fabric/Forge, ROM, extensión VS Code, API REST, web
+- **modelCatalog** + **modelRouter** + **hardwareProfile**: recomendaciones por RAM/GPU
+- **promptSettings**: prompts editables (chat, profesor, agente)
+- **selfTest**: autotest de Chat, Profesor y Agente al arrancar
+- **copilotLayout**: icono dock → chat panel derecho (estilo Copilot)
+- **CONTRIBUTING.md** y scripts de prueba (`test-bot-intent`, `test-reference-learner`, `test-reference-integration`)
+- README con enlace **VS Marketplace**; scripts `publish-both.sh`, `first-publish.sh`, `setup-marketplace.sh`
 
 ### Changed
-- Agente: flujo unificado `resolveReferences` (online/offline/combinado)
-- `searchWebMulti` ordena hits con `prioritizeGitHubHits`
+- Agente: flujo unificado `resolveReferences` (online / offline / combinado)
+- `searchWebMulti` deduplica y ordena con prioridad GitHub
 - Patrones GitHub siempre incluidos en los 14 patrones guardados
+- Ollama: timeouts más rápidos en lectura y generación
+- Media: iconos activity bar, diablo.jpg, paypal.svg
 
-### Fixed
+### Fixed — UI Chat / Profesor / Agente
+- **Chat, Profesor y Agente desbloqueados**: `isSending` se libera tras errores (`responseEnd`)
+- **Profesor y Agente** ya no exigen código en el editor (solo Chat lo pide para explicar)
+- **Selector Ollama** visible al abrir; lista actualizada; `local-copilot-turbo` coincide con `:latest`
+- **Icono dock izquierdo** visible (SVG monocromo); botón «Abrir chat»; comando `local.openDock`
+- Welcome/sugerencias no dejan el chat bloqueado
 - Caché offline combina aprendizaje previo + blueprint + builtin en un solo contexto
-- **Icono del dock izquierdo** visible de nuevo (SVG monocromo en barra de actividad)
-- Panel del dock con botón «Abrir chat»; comando **Local: Mostrar icono en barra lateral**
-- **Selector Ollama** actualiza la lista; coincide `local-copilot-turbo` con `:latest`
-- Sugerencias del welcome ya no dejan el chat bloqueado (`isSending`)
 
 ## [1.0.46] - 2026-06-22
 
