@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.34] - 2026-06-22
+
+### Fixed
+- Chat/Profesor/Agente se bloqueaban: `isSending` no se liberaba tras errores de conexión
+- Selector de modelos Ollama visible de nuevo al abrir el panel
+- Modo Profesor usa su prompt aunque pidas explicar código
+- Botón ↗️ separado del selector de red (ya no dos iconos 🌐 confusos)
+- Etiquetas claras: **Red:** (local/+Internet), **IA:**, **Modelo Ollama:**
+
 ## [1.0.33] - 2026-06-22
 
 ### Changed

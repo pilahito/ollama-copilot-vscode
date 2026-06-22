@@ -310,6 +310,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       this.post({
         type: 'response',
         text: `⚠ No se pudo usar ${providerName}. ${status.message ?? 'Revisa la configuración y vuelve a intentarlo.'}`,
+        done: true,
       });
       return;
     }
@@ -317,10 +318,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'responseStart' });
     try {
       let systemContent = SYSTEM_PROMPT;
-      if (hasEditorCode || needsEditorContext(text)) {
+      if (chatMode === 'teacher') {
+        systemContent = hasEditorCode || needsEditorContext(text)
+          ? `${TEACHER_PROMPT}\n\n${EXPLAIN_CODE_PROMPT}`
+          : TEACHER_PROMPT;
+      } else if (hasEditorCode || needsEditorContext(text)) {
         systemContent = EXPLAIN_CODE_PROMPT;
-      } else if (chatMode === 'teacher') {
-        systemContent = TEACHER_PROMPT;
       }
 
       const messages = [
@@ -386,9 +389,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     this.view?.webview.postMessage(msg);
   }
 
+  private getExtensionVersion(): string {
+    return vscode.extensions.getExtension('pilahito.local-copilot')?.packageJSON.version ?? '0.0.0';
+  }
+
   // ── HTML de la Webview ────────────────────────────────────────────────────────
 
   private getHtml(webview: vscode.Webview): string {
+    const version = this.getExtensionVersion();
     const iconUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.png')
     ).toString();
@@ -1238,8 +1246,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       <div class="subtitle">Tu asistente de código con IA</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center;">
-      <button class="btn-icon" onclick="openInBrowser()" title="Abrir chat en tu navegador predeterminado">🌐</button>
-      <button class="btn-icon" onclick="showAPIsModal()" title="Configurar APIs">⚙️</button>
+      <button class="btn-icon" onclick="openInBrowser()" title="Abrir sitio del proveedor (Ollama, Groq, etc.)">↗️</button>
+      <button class="btn-icon" onclick="showAPIsModal()" title="Configurar claves API">⚙️</button>
       <div class="status-badge online" id="status-badge">
         <span class="status-dot"></span>
         <span id="status-text">Conectando...</span>
@@ -1247,15 +1255,15 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <div class="controls">
-    <div class="control-group">
-      <label>🌐</label>
-      <select id="internet-mode" onchange="setInternetMode(this.value)" title="Activar o desactivar internet">
-        <option value="false">Local</option>
-        <option value="true">+Internet</option>
+    <div class="control-group" id="internet-control">
+      <label>Red:</label>
+      <select id="internet-mode" onchange="setInternetMode(this.value)" title="Búsqueda web con Ollama local">
+        <option value="false">🏠 Solo local</option>
+        <option value="true">🔍 +Internet</option>
       </select>
     </div>
     <div class="control-group" style="flex:1">
-      <label><img src="${iconUri}" alt="" class="tab-icon-img" /></label>
+      <label>IA:</label>
       <select id="provider-select" onchange="setProvider(this.value)">
         <optgroup label="🏠 IA Local">
           <option value="auto">🔄 Auto (detecta Ollama)</option>
@@ -1276,9 +1284,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <div class="auto-hint" id="auto-hint" style="display:none;"></div>
-  <div class="controls" id="ollama-models-row" style="display:none;">
+  <div class="controls" id="ollama-models-row">
     <div class="control-group" style="flex:1">
-      <label>📦 Modelo:</label>
+      <label>Modelo Ollama:</label>
       <select id="ollama-model-select">
         <option value="">Cargando modelos...</option>
       </select>
@@ -1457,7 +1465,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <span class="creator-name">DavidPilahito7</span>
     <span>•</span>
     <a href="https://github.com/pilahito" class="creator-link" target="_blank">GitHub</a>
-    <span class="version-badge">v1.0.31</span>
+    <span class="version-badge">v${version}</span>
   </div>
 </div>
 
@@ -1531,18 +1539,31 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     document.getElementById('mode-agent').classList.toggle('active', m === 'agent');
     document.getElementById('mode-teacher').classList.toggle('active', m === 'teacher');
 
-    document.getElementById('hint').innerHTML = m === 'agent'
-      ? '🤖 Agente: analiza y modifica archivos automáticamente'
-      : m === 'teacher'
-      ? '🎓 Profesor: explica paso a paso sin tocar archivos'
-      : '💬 Chat: responde preguntas sin modificar archivos';
-
-    // Show model selector for Ollama even in agent/teacher mode
-    const ollamaRow = document.getElementById('ollama-models-row');
-    const provider = document.getElementById('provider-select')?.value;
-    if (ollamaRow && (provider === 'ollama' || provider === 'auto')) {
-      ollamaRow.style.display = 'flex';
+    const hintEl = document.getElementById('hint');
+    if (hintEl) {
+      hintEl.textContent = m === 'agent'
+        ? '🤖 Agente: analiza y modifica archivos automáticamente'
+        : m === 'teacher'
+          ? '🎓 Profesor: explica paso a paso sin tocar archivos'
+          : '💬 Chat: responde preguntas sin modificar archivos';
     }
+
+    const prompt = document.getElementById('prompt');
+    if (prompt) {
+      prompt.placeholder = m === 'agent'
+        ? 'Ej: crea carpeta multimedia y comando !listmultimedia'
+        : m === 'teacher'
+          ? 'Ej: explícame cómo funciona async/await con ejemplos'
+          : 'Pregunta algo sobre tu código...';
+    }
+
+    updateModelRow(document.getElementById('provider-select')?.value || 'auto');
+  }
+
+  function syncInternetControlVisibility(provider) {
+    const internetControl = document.getElementById('internet-control');
+    if (!internetControl) return;
+    internetControl.style.display = isWebProvider(provider) ? 'none' : 'flex';
   }
 
   function getTime() {
@@ -1768,6 +1789,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   // ══════════════════════════════════════════════════════════════════════════
   function setProvider(provider) {
     vscode.postMessage({ type: 'setProvider', provider });
+    syncInternetControlVisibility(provider);
     updateModelRow(provider);
   }
 
@@ -1791,6 +1813,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   function updateModelRow(provider) {
     const ollamaRow = document.getElementById('ollama-models-row');
     if (!ollamaRow) return;
+    syncInternetControlVisibility(provider);
     if (provider === 'auto' || provider === 'ollama') {
       ollamaRow.style.display = 'flex';
       vscode.postMessage({ type: 'getOllamaModels' });
@@ -1800,6 +1823,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   let isSending = false;
+
+  function finishSending() {
+    isSending = false;
+    removeTypingIndicator();
+    currentAiEl = null;
+    streamRaw = '';
+  }
 
   function submitPrompt() {
     const text = promptEl.value.trim();
@@ -1888,19 +1918,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           statusText.textContent = msg.message || 'Desconectado';
         }
 
+        syncInternetControlVisibility(provider);
         updateModelRow(provider);
 
-        if (isWebProvider(effective)) {
-          const current = msg.currentModel || '';
-          const select = document.getElementById('ollama-model-select');
-          if (select) {
-            select.innerHTML = '';
-            const opt = document.createElement('option');
-            opt.value = current;
-            opt.textContent = current || ('Modelo ' + effective);
-            opt.selected = true;
-            select.appendChild(opt);
-          }
+        if (!isWebProvider(effective) && (provider === 'auto' || provider === 'ollama')) {
+          vscode.postMessage({ type: 'getOllamaModels' });
         }
         break;
       }
@@ -1926,16 +1948,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         break;
         
       case 'responseEnd':
-        currentAiEl = null;
-        isSending = false;
+        finishSending();
         break;
         
       case 'response':
-        removeTypingIndicator();
-        if (msg.done) {
-          streamRaw = '';
+        finishSending();
+        if (msg.text) {
           addMessage('ai', msg.text);
-          isSending = false;
         }
         break;
         
@@ -2001,6 +2020,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
   }
+
+  // Inicializar UI al abrir el panel
+  setMode('chat');
+  syncInternetControlVisibility(providerEl?.value || 'auto');
+  updateModelRow(providerEl?.value || 'auto');
+  vscode.postMessage({ type: 'checkConnection' });
+  vscode.postMessage({ type: 'getOllamaModels' });
 </script>
 </body>
 </html>`;
