@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.35] - 2026-06-22
+
+### Fixed
+- **Profesor y Agente** ya no exigen código en el editor (solo Chat lo pide)
+- Pestañas Chat/Profesor/Agente con `addEventListener` (más fiable en webview)
+- Selector Ollama muestra el modelo configurado al instante + caché 45s
+- Menos peticiones duplicadas a `/api/tags` al abrir el panel
+
 ## [1.0.34] - 2026-06-22
 
 ### Fixed

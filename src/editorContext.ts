@@ -48,7 +48,7 @@ export function resolveCodeEditor(): vscode.TextEditor | undefined {
   return vscode.window.visibleTextEditors.find(isCodeEditor);
 }
 
-/** Peticiones que requieren código del editor abierto. */
+/** Peticiones que requieren código del editor abierto (solo modo Chat). */
 export function needsEditorContext(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (/explica.*c[oó]digo|explain.*code|qu[eé] hace este/i.test(t)) { return true; }

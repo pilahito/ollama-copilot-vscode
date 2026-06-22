@@ -85,6 +85,9 @@ export class OllamaClient {
   private huggingfaceModel: string;
   private autoResolvedProvider: ProviderName = 'duckduckgo';
   private cachedBrowserName?: string;
+  private cachedModelList:     string[] = [];
+  private modelListCacheTime  = 0;
+  private static readonly MODEL_LIST_CACHE_MS = 45_000;
 
   // ── Timeouts ────────────────────────────────────────────────────────────────
   private static readonly TIMEOUT_GET_MS  = 2_000;
@@ -479,13 +482,21 @@ export class OllamaClient {
   }
 
   // Nuevo: detectar siempre las IAs instaladas localmente, incluso si usas proveedor remoto
-  async getInstalledOllamaModels(): Promise<string[]> {
+  async getInstalledOllamaModels(force = false): Promise<string[]> {
+    const now = Date.now();
+    if (!force && this.cachedModelList.length > 0 &&
+        now - this.modelListCacheTime < OllamaClient.MODEL_LIST_CACHE_MS) {
+      return this.cachedModelList;
+    }
     try {
       const data = await this.httpGet('/api/tags');
       const parsed = JSON.parse(data);
-      return (parsed.models ?? []).map((m: { name: string }) => m.name);
+      const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
+      this.cachedModelList    = models;
+      this.modelListCacheTime = now;
+      return models;
     } catch {
-      return [];
+      return this.cachedModelList;
     }
   }
 
