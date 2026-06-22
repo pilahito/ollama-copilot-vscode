@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.86] - 2026-06-23
+## [1.0.36] - 2026-06-23
 
 ### Added
 - **ReferenceLearner**: investiga proyectos similares en GitHub con +Internet y guarda patrones en `~/.local-copilot/learned-references.json`
@@ -19,6 +19,10 @@
 
 ### Fixed
 - Caché offline combina aprendizaje previo + blueprint + builtin en un solo contexto
+- **Icono del dock izquierdo** visible de nuevo (SVG monocromo en barra de actividad)
+- Panel del dock con botón «Abrir chat»; comando **Local: Mostrar icono en barra lateral**
+- **Selector Ollama** actualiza la lista; coincide `local-copilot-turbo` con `:latest`
+- Sugerencias del welcome ya no dejan el chat bloqueado (`isSending`)
 
 ## [1.0.46] - 2026-06-22
 
@@ -119,16 +123,6 @@
 - Timeouts Ollama más generosos (5s lectura, 30s generación)
 - `local-copilot-turbo` sin `:latest` ya no se pierde al auto-detectar modelos
 - Canal de salida **Local Copilot** para depurar fallos (`Ver → Salida`)
-
-## [1.0.36] - 2026-06-22
-
-### Fixed
-- **Icono del dock izquierdo** visible de nuevo (SVG monocromo en barra de actividad)
-- Panel del dock con botón «Abrir chat» en lugar de vista vacía
-- **Selector Ollama** siempre actualiza la lista; coincide `local-copilot-turbo` con `:latest`
-- Sugerencias del welcome ya no dejan el chat bloqueado (`isSending`)
-- Errores de streaming liberan el botón enviar (`responseEnd` en catch)
-- Comando **Local: Mostrar icono en barra lateral** (`local.openDock`)
 
 ## [1.0.35] - 2026-06-22
 

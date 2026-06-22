@@ -161,7 +161,7 @@ El agente muestra:
 
 La búsqueda usa DuckDuckGo (gratis, sin API key). Para IAs en la nube (Groq, Gemini, etc.) configura las API keys en ⚙️.
 
-### Aprendizaje de referencias (v1.0.86+)
+### Aprendizaje de referencias (v1.0.36+)
 
 Con +Internet, el Agente, Chat y Profesor **investigan cómo están hechos proyectos similares** en GitHub y guardan patrones en:
 
@@ -240,7 +240,7 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 
 | Versión | Cambios principales |
 |---------|---------------------|
-| **1.0.86** | ReferenceLearner: GitHub, caché offline, Chat/Profesor/Agente |
+| **1.0.36** | ReferenceLearner: GitHub, caché offline, Chat/Profesor/Agente |
 | **1.0.80+** | Intención usuario, APIs, GitHub sentido común, calidad de código |
 | **1.0.12** | Agente +Internet investiga la web y luego programa |
 | **1.0.11** | Anti-refusal, reintento automático, Ollama optimizado para agente |
