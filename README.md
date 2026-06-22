@@ -14,7 +14,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/v/release/pilahito/ollama-copilot-vscode?label=versión" alt="versión">
   <img src="https://img.shields.io/badge/licencia-MIT-blue" alt="MIT">
   <img src="https://img.shields.io/badge/VS%20Code-%5E1.85-007ACC" alt="VS Code">
   <img src="https://img.shields.io/badge/Ollama-compatible-green" alt="Ollama">
