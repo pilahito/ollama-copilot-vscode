@@ -25,6 +25,18 @@
 import * as http from 'http';
 import { execSync } from 'child_process';
 import * as vscode from 'vscode';
+import { getHardwareProfile, type HardwareProfile } from './hardwareProfile';
+import {
+  findInstalledModel,
+  modelInstalled,
+  pickTaskModels,
+  resolveTaskModel,
+  type TaskKind,
+  type TaskModels,
+} from './modelRouter';
+import { detectApiRecommendations } from './apiGuidance';
+import type { ProjectBlueprint } from './projectBlueprints';
+import { prioritizeGitHubHits } from './referenceLearner';
 
 /** Resultado de la comprobación de conexión con el proveedor activo. */
 export interface OllamaConnectionResult {
@@ -83,15 +95,20 @@ export class OllamaClient {
   private cerebrasModel: string;
   private huggingfaceApiKey: string;
   private huggingfaceModel: string;
-  private autoResolvedProvider: ProviderName = 'duckduckgo';
+  private autoResolvedProvider: ProviderName = 'ollama';
   private cachedBrowserName?: string;
   private cachedModelList:     string[] = [];
   private modelListCacheTime  = 0;
-  private static readonly MODEL_LIST_CACHE_MS = 45_000;
+  private connectionCache:     OllamaConnectionResult | null = null;
+  private connectionCacheTime = 0;
+  private prefetchDone        = false;
+  private resolvedBaseUrl?:   string;
+  private static readonly MODEL_LIST_CACHE_MS = 120_000;
+  private static readonly CONNECTION_CACHE_MS = 10_000;
 
   // ── Timeouts ────────────────────────────────────────────────────────────────
-  private static readonly TIMEOUT_GET_MS  = 2_000;
-  private static readonly TIMEOUT_POST_MS = 8_000;
+  private static readonly TIMEOUT_GET_MS  = 8_000;
+  private static readonly TIMEOUT_POST_MS = 30_000;
 
   constructor() {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
@@ -159,7 +176,7 @@ export class OllamaClient {
       return;
     }
 
-    const useModel = model ?? this.getConfig('chatModel', 'qwen2.5-coder:7b');
+    const useModel = this.resolveInstalledModelName(model ?? this.getModelForTask('chat'));
     try {
       await this.httpPost(
         '/api/generate',
@@ -319,38 +336,114 @@ export class OllamaClient {
     return urls[this.getEffectiveProvider()] ?? 'https://ollama.com';
   }
 
+  // ── Prefetch / bootstrap (UI instantánea) ───────────────────────────────────
+
+  /** Precarga modelos en segundo plano al activar la extensión. */
+  async prefetch(force = false): Promise<void> {
+    if (this.prefetchDone && !force && this.cachedModelList.length > 0) { return; }
+    await this.getInstalledOllamaModels(true);
+    await this.resolveAutoProvider();
+    if (this.cachedModelList.length > 0 && !this.prefetchDone) {
+      await this.autoSelectBestModels();
+      this.prefetchDone = true;
+    } else if (this.cachedModelList.length > 0) {
+      this.prefetchDone = true;
+    }
+    await this.checkConnection(true);
+  }
+
+  getHardwareProfile(): HardwareProfile {
+    return getHardwareProfile();
+  }
+
+  getConfiguredTaskModels(): Partial<TaskModels> {
+    const c = vscode.workspace.getConfiguration('local');
+    return {
+      chat: c.get('chatModel', ''),
+      completion: c.get('completionModel', ''),
+      agent: c.get('agentModel', '') || c.get('chatModel', ''),
+    };
+  }
+
+  getModelForTask(task: TaskKind): string {
+    const installed = this.cachedModelList;
+    const picked = resolveTaskModel(installed, task, this.getConfiguredTaskModels());
+    return findInstalledModel(installed, picked) ?? picked;
+  }
+
+  /** Devuelve el nombre exacto instalado en Ollama (p. ej. local-copilot-turbo → local-copilot-turbo:latest). */
+  resolveInstalledModelName(model: string, installed?: string[]): string {
+    const list = installed ?? this.cachedModelList;
+    return findInstalledModel(list, model) ?? model;
+  }
+
+  /** Snapshot síncrono para pintar la UI sin esperar red. */
+  getBootstrapSnapshot(): Record<string, unknown> {
+    const config = vscode.workspace.getConfiguration('local');
+    const taskModels = pickTaskModels(this.cachedModelList);
+    const cached = this.connectionCache;
+    return {
+      ok: cached?.ok ?? this.cachedModelList.length > 0,
+      models: this.cachedModelList,
+      message: cached?.message,
+      provider: this.provider,
+      effectiveProvider: this.getEffectiveProvider(),
+      internetEnabled: this.useInternet,
+      currentModel: config.get('chatModel', '') || config.get('completionModel', ''),
+      chatModel: config.get('chatModel', ''),
+      completionModel: config.get('completionModel', ''),
+      agentModel: config.get('agentModel', '') || config.get('chatModel', ''),
+      taskModels,
+      hardware: getHardwareProfile(),
+      noModels: this.cachedModelList.length === 0 && !(cached?.ok && cached.models.length > 0),
+    };
+  }
+
+  invalidateCaches(): void {
+    this.connectionCache     = null;
+    this.connectionCacheTime = 0;
+    this.modelListCacheTime  = 0;
+    this.resolvedBaseUrl     = undefined;
+  }
+
+  /** URL base que responde (localhost o 127.0.0.1). */
+  getActiveBaseUrl(): string {
+    return this.resolvedBaseUrl ?? this.baseUrl.replace(/\/$/, '');
+  }
+
   // ── Estado de conexión ───────────────────────────────────────────────────────
 
   /**
    * Comprueba si Ollama está corriendo en local.
-   * Permite que la extensión detecte la IA automáticamente,
-   * sin que el usuario tenga que configurar nada más.
+   * Usa caché 10s para evitar lag en la UI.
    */
-  async checkConnection(): Promise<OllamaConnectionResult> {
+  async checkConnection(force = false): Promise<OllamaConnectionResult> {
+    const now = Date.now();
+    if (!force && this.connectionCache &&
+        now - this.connectionCacheTime < OllamaClient.CONNECTION_CACHE_MS) {
+      return this.connectionCache;
+    }
+
     this.refreshConfig();
     await this.resolveAutoProvider();
 
     const effective = this.getEffectiveProvider();
-    const useInternet = this.isEffectiveInternetMode();
     const browserName = this.getBrowserName();
     const autoMode = this.provider === 'auto';
-    const withMeta = (result: OllamaConnectionResult): OllamaConnectionResult => ({
-      ...result,
-      provider: this.provider,
-      effectiveProvider: effective,
-      autoMode,
-      browserName,
-    });
+    const withMeta = (result: OllamaConnectionResult): OllamaConnectionResult => {
+      const full = {
+        ...result,
+        provider: this.provider,
+        effectiveProvider: effective,
+        autoMode,
+        browserName,
+      };
+      this.connectionCache     = full;
+      this.connectionCacheTime = now;
+      return full;
+    };
 
-    // Siempre detectar las IAs instaladas localmente con Ollama, aunque uses proveedor internet
-    let installedOllamaModels: string[] = [];
-    try {
-      const data = await this.httpGet('/api/tags');
-      const parsed = JSON.parse(data);
-      installedOllamaModels = (parsed.models ?? []).map((m: { name: string }) => m.name);
-    } catch {
-      // Ollama no disponible
-    }
+    const installedOllamaModels = await this.getInstalledOllamaModels(force);
 
     if (this.isInternetProvider(effective)) {
       if (effective === 'gemini') {
@@ -452,33 +545,31 @@ export class OllamaClient {
       }
     }
 
-    try {
-      const data   = await this.httpGet('/api/tags');
-      const parsed = JSON.parse(data);
-      const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
+    if (installedOllamaModels.length > 0) {
       this.connected = true;
-      const webNote = this.useInternet ? ' + búsqueda web' : '';
+      const webNote = this.useInternet ? ' + internet bajo demanda' : '';
       return withMeta({
         ok: true,
-        models,
+        models: installedOllamaModels,
         provider: 'ollama',
         message: autoMode
-          ? `Auto → Ollama local${webNote}`
-          : this.useInternet
-            ? `Ollama local${webNote}`
-            : undefined,
-      });
-    } catch {
-      this.connected = false;
-      return withMeta({
-        ok: false,
-        models: [],
-        provider: 'ollama',
-        message: autoMode && this.useInternet
-          ? 'Sin Ollama local. Instala Ollama o elige una API web y configura la clave en ⚙️.'
-          : 'No se detecta Ollama. Ejecuta "ollama serve" en tu terminal.',
+          ? `✓ ${installedOllamaModels.length} IA(s) · Auto → Ollama${webNote}`
+          : `✓ ${installedOllamaModels.length} modelo(s) listos${webNote}`,
       });
     }
+
+    this.connected = false;
+    const hw = getHardwareProfile();
+    return withMeta({
+      ok: false,
+      models: [],
+      provider: 'ollama',
+      message: installedOllamaModels.length === 0
+        ? `⚠ Sin modelos IA. Ejecuta: ollama pull qwen2.5-coder:7b (PC ${hw.tier}, ${hw.ramGb}GB RAM, ${hw.osLabel})`
+        : autoMode && this.useInternet
+          ? 'Sin Ollama. Instala Ollama o configura una API en ⚙️.'
+          : 'No se detecta Ollama. Ejecuta "ollama serve".',
+    });
   }
 
   // Nuevo: detectar siempre las IAs instaladas localmente, incluso si usas proveedor remoto
@@ -505,43 +596,29 @@ export class OllamaClient {
    * Prefers coder models, chooses lighter for completion, suitable for chat.
    * Updates the VS Code settings automatically.
    */
-  async autoSelectBestModels(): Promise<{ chatModel: string; completionModel: string } | null> {
+  async autoSelectBestModels(): Promise<TaskModels | null> {
     const installed = await this.getInstalledOllamaModels();
-    if (installed.length === 0) {
-      return null;
-    }
+    const picked    = pickTaskModels(installed);
+    if (!picked) { return null; }
 
     const config = vscode.workspace.getConfiguration('local');
-    const currentChat = config.get<string>('chatModel', '');
-    const currentCompletion = config.get<string>('completionModel', '');
-    const installedMatch = (name: string) => installed.some((m) => m === name || m.startsWith(`${name}:`));
+    const cur = this.getConfiguredTaskModels();
 
-    if (installedMatch(currentChat) && installedMatch(currentCompletion)) {
-      return { chatModel: currentChat, completionModel: currentCompletion };
+    const chat = modelInstalled(installed, cur.chat ?? '') ? cur.chat! : picked.chat;
+    const completion = modelInstalled(installed, cur.completion ?? '') ? cur.completion! : picked.completion;
+    const agent = modelInstalled(installed, cur.agent ?? '') ? cur.agent! : picked.agent;
+
+    if (chat !== cur.chat) {
+      await config.update('chatModel', chat, vscode.ConfigurationTarget.Global);
     }
-
-    let chatModel = currentChat;
-    let completionModel = currentCompletion;
-    const has = (name: string) => installed.some((m) => m.includes(name));
-
-    if (has('qwen2.5-coder:7b')) {
-      completionModel = installed.find((m) => m.includes('qwen2.5-coder:7b')) ?? 'qwen2.5-coder:7b';
-      chatModel = has('qwen2.5-coder:14b')
-        ? (installed.find((m) => m.includes('qwen2.5-coder:14b')) ?? 'qwen2.5-coder:14b')
-        : completionModel;
-    } else if (has('llama3.2')) {
-      const llama = installed.find((m) => m.includes('llama3.2')) ?? 'llama3.2:latest';
-      completionModel = llama;
-      chatModel = llama;
-    } else {
-      completionModel = installed[0];
-      chatModel = installed[0];
+    if (completion !== cur.completion) {
+      await config.update('completionModel', completion, vscode.ConfigurationTarget.Global);
     }
-
-    await config.update('chatModel', chatModel, vscode.ConfigurationTarget.Global);
-    await config.update('completionModel', completionModel, vscode.ConfigurationTarget.Global);
+    if (agent !== cur.agent) {
+      await config.update('agentModel', agent, vscode.ConfigurationTarget.Global);
+    }
     this.refreshConfig();
-    return { chatModel, completionModel };
+    return { chat, completion, agent };
   }
 
   isConnected(): boolean {
@@ -561,7 +638,7 @@ export class OllamaClient {
     this.refreshConfig();
     await this.resolveAutoProvider();
     const effective = this.getEffectiveProvider();
-    const useModel = model ?? this.getConfig('completionModel', 'codellama:13b');
+    const useModel = this.resolveInstalledModelName(model ?? this.getModelForTask('completion'));
 
     if (this.isInternetProvider(effective)) {
       if (effective === 'gemini') {
@@ -635,7 +712,7 @@ export class OllamaClient {
     this.refreshConfig();
     await this.resolveAutoProvider();
     const effective = this.getEffectiveProvider();
-    const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
+    const useModel = this.resolveInstalledModelName(model ?? this.getModelForTask('chat'));
 
     if (this.isInternetProvider(effective)) {
       let response = '';
@@ -661,13 +738,14 @@ export class OllamaClient {
     let fullResponse = '';
 
     return new Promise((resolve, reject) => {
-      const url     = new URL(`${this.baseUrl}/api/chat`);
+      const url     = new URL(`${this.getActiveBaseUrl()}/api/chat`);
       const payload = this.getOllamaChatPayload(useModel, messages, false);
+      const port    = url.port || (url.protocol === 'https:' ? '443' : '80');
 
       const req = http.request(
         {
           hostname: url.hostname,
-          port:     url.port,
+          port,
           path:     url.pathname,
           method:   'POST',
           headers:  {
@@ -719,7 +797,7 @@ export class OllamaClient {
     this.refreshConfig();
     await this.resolveAutoProvider();
     const effective = this.getEffectiveProvider();
-    const useModel = model ?? this.getConfig('chatModel', 'mistral:7b');
+    const useModel = this.resolveInstalledModelName(model ?? this.getModelForTask('agent'));
 
     if (this.isInternetProvider(effective)) {
       return this.chatStream(messages, onToken, useModel);
@@ -728,13 +806,14 @@ export class OllamaClient {
     let fullResponse = '';
 
     return new Promise((resolve, reject) => {
-      const url = new URL(`${this.baseUrl}/api/chat`);
+      const url = new URL(`${this.getActiveBaseUrl()}/api/chat`);
       const payload = this.getOllamaChatPayload(useModel, messages, true);
+      const port = url.port || (url.protocol === 'https:' ? '443' : '80');
 
       const req = http.request(
         {
           hostname: url.hostname,
-          port:     url.port,
+          port,
           path:     url.pathname,
           method:   'POST',
           headers:  {
@@ -864,63 +943,65 @@ export class OllamaClient {
   // ── DuckDuckGo AI (GRATIS, sin API key) ───────────────────────────────────────
 
   private async fetchDuckDuckGoChat(messages: OllamaChatMessage[]): Promise<string> {
+    const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     try {
-      // Paso 1: Obtener el token VQD
       const statusResponse = await fetch('https://duckduckgo.com/duckchat/v1/status', {
-        headers: {
-          'x-vqd-accept': '1',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        headers: { 'x-vqd-accept': '1', 'User-Agent': ua },
       });
-      
-      const vqd = statusResponse.headers.get('x-vqd-4');
-      if (!vqd) {
-        throw new Error('No se pudo obtener token de DuckDuckGo');
+
+      const vqd4   = statusResponse.headers.get('x-vqd-4');
+      const vqdHash = statusResponse.headers.get('x-vqd-hash-1');
+      if (!vqd4 && !vqdHash) {
+        throw new Error('No se pudo conectar con DuckDuckGo AI. Usa "Abrir en navegador" en ⚙️.');
       }
 
-      // Paso 2: Enviar el mensaje
       const chatMessages = messages.map((m) => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content
+        content: m.content,
       }));
+
+      const chatHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'User-Agent': ua,
+      };
+      if (vqd4) {
+        chatHeaders['x-vqd-4'] = vqd4;
+      } else if (vqdHash) {
+        chatHeaders['x-vqd-hash-1'] = vqdHash;
+      }
 
       const response = await fetch('https://duckduckgo.com/duckchat/v1/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-vqd-4': vqd,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: chatMessages
-        })
+        headers: chatHeaders,
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: chatMessages }),
       });
+
+      const text = await response.text();
+
+      if (text.includes('ERR_CHALLENGE') || text.includes('"status":418')) {
+        throw new Error(
+          'DuckDuckGo pide verificación en el navegador. En ⚙️ pulsa "Abrir en navegador" o usa Ollama local.'
+        );
+      }
 
       if (!response.ok) {
         throw new Error(`DuckDuckGo error: ${response.status}`);
       }
 
-      // Paso 3: Procesar la respuesta streaming
-      const text = await response.text();
       const lines = text.split('\n');
       let result = '';
-      
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
-          if (data === '[DONE]') break;
+          if (data === '[DONE]') { break; }
           try {
-            const json = JSON.parse(data);
-            if (json.message) {
-              result += json.message;
-            }
-          } catch {
-            // Ignorar líneas que no son JSON válido
-          }
+            const json = JSON.parse(data) as { message?: string };
+            if (json.message) { result += json.message; }
+          } catch { /* línea parcial */ }
         }
       }
-      
+
       return result.trim() || 'No se recibió respuesta de DuckDuckGo AI.';
     } catch (error) {
       throw new Error(`Error DuckDuckGo: ${error instanceof Error ? error.message : String(error)}`);
@@ -1058,37 +1139,74 @@ export class OllamaClient {
 
   // ── HTTP helpers ─────────────────────────────────────────────────────────────
 
-  /** Petición GET simple sobre el API de Ollama. */
-  private httpGet(path: string): Promise<string> {
+  /** URLs base a probar (localhost ↔ 127.0.0.1). */
+  private getOllamaBaseUrls(): string[] {
+    const base = this.baseUrl.replace(/\/$/, '');
+    const urls = [base];
+    if (base.includes('localhost')) {
+      urls.push(base.replace('localhost', '127.0.0.1'));
+    } else if (base.includes('127.0.0.1')) {
+      urls.push(base.replace('127.0.0.1', 'localhost'));
+    }
+    return [...new Set(urls)];
+  }
+
+  private httpGetOnce(baseUrl: string, path: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const url = new URL(this.baseUrl + path);
+      const url = new URL(baseUrl + path);
+      const port = url.port || (url.protocol === 'https:' ? '443' : '80');
       const req = http.get(
         {
           hostname: url.hostname,
-          port:     url.port,
-          path:     url.pathname,
-          timeout:  OllamaClient.TIMEOUT_GET_MS
+          port,
+          path:     url.pathname + url.search,
+          timeout:  OllamaClient.TIMEOUT_GET_MS,
         },
         (res) => {
           let body = '';
           res.on('data', (chunk: Buffer) => (body += chunk));
-          res.on('end', () => resolve(body));
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(new Error(`HTTP ${res.statusCode}`));
+              return;
+            }
+            resolve(body);
+          });
         }
       );
 
-      req.on('error',   reject);
+      req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     });
+  }
+
+  /** Petición GET simple sobre el API de Ollama. */
+  private async httpGet(path: string): Promise<string> {
+    let lastErr: Error | undefined;
+    const bases = this.resolvedBaseUrl
+      ? [this.resolvedBaseUrl, ...this.getOllamaBaseUrls().filter((b) => b !== this.resolvedBaseUrl)]
+      : this.getOllamaBaseUrls();
+    for (const base of bases) {
+      try {
+        const body = await this.httpGetOnce(base, path);
+        this.resolvedBaseUrl = base;
+        return body;
+      } catch (err: unknown) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    throw lastErr ?? new Error('Ollama no responde');
   }
 
   /** Petición POST simple (sin streaming) sobre el API de Ollama. */
   private httpPost(path: string, body: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const url = new URL(this.baseUrl + path);
+      const url = new URL(this.getActiveBaseUrl() + path);
+      const port = url.port || (url.protocol === 'https:' ? '443' : '80');
       const req = http.request(
         {
           hostname: url.hostname,
-          port:     url.port,
+          port,
           path:     url.pathname,
           method:   'POST',
           headers:  {
@@ -1277,8 +1395,11 @@ export class OllamaClient {
     return [];
   }
 
-  /** Varias búsquedas y deduplicación por URL. */
-  async searchWebMulti(queries: string[]): Promise<{ title: string; url: string; snippet: string }[]> {
+  /** Varias búsquedas y deduplicación por URL (GitHub/repos primero). */
+  async searchWebMulti(
+    queries: string[],
+    maxResults = 10
+  ): Promise<{ title: string; url: string; snippet: string }[]> {
     const seen = new Set<string>();
     const merged: { title: string; url: string; snippet: string }[] = [];
 
@@ -1293,22 +1414,73 @@ export class OllamaClient {
       }
     }
 
-    return merged.slice(0, 10);
+    return prioritizeGitHubHits(merged).slice(0, maxResults);
   }
 
   /** Consultas de búsqueda derivadas de la petición del usuario/agente. */
-  buildResearchQueries(prompt: string): string[] {
+  buildResearchQueries(prompt: string, blueprint?: ProjectBlueprint | null): string[] {
     const base = prompt.replace(/\s+/g, ' ').trim().slice(0, 100);
-    const queries = new Set<string>([base]);
+    const queries = new Set<string>();
 
-    if (/\b(api|sdk|lib|framework|npm|discord|react|node|python|vscode|ollama)\b/i.test(prompt)) {
+    if (/\b(bot\s+discord|discord\s+bot|discord\.js)\b/i.test(prompt)) {
+      queries.add('discord.js v14 slash commands guide');
+      queries.add('discord.js voice music bot example');
+    }
+    if (/\b(telegram)\b/i.test(prompt)) {
+      queries.add('telegraf bot API example');
+    }
+    if (/\b(trivia|quiz)\b/i.test(prompt)) {
+      queries.add('Open Trivia DB API documentation');
+    }
+    if (/\b(clima|weather|tiempo)\b/i.test(prompt)) {
+      queries.add('Open-Meteo API free weather');
+    }
+    if (/\b(github|octokit)\b/i.test(prompt)) {
+      queries.add('octokit REST API node example');
+    }
+    if (/\b(api\s+rest|express|backend)\b/i.test(prompt)) {
+      queries.add('express.js REST API tutorial');
+    }
+    if (/\b(plugin|spigot|papermc|bukkit)\b/i.test(prompt) && /\b(minecraft|mc)\b/i.test(prompt)) {
+      queries.add('PaperMC plugin development plugin.yml gradle');
+    }
+    if (/\b(fabric|quilt)\b/i.test(prompt) && /\b(mod|minecraft)\b/i.test(prompt)) {
+      queries.add('Fabric mod development fabric.mod.json loom gradle');
+    }
+    if (/\b(forge|neoforge)\b/i.test(prompt)) {
+      queries.add('Minecraft Forge mod mods.toml gradle setup');
+    }
+    if (/\b(rom|lineage|aosp)\b/i.test(prompt)) {
+      queries.add('LineageOS build device tree setup guide');
+    }
+    if (/\b(extensi[oó]n|vscode)\b/i.test(prompt)) {
+      queries.add('VS Code extension API hello world typescript');
+    }
+    if (blueprint?.kind === 'minecraft-plugin') {
+      queries.add('Paper API JavaPlugin command example');
+    }
+    if (blueprint?.kind === 'minecraft-mod-fabric') {
+      queries.add('Fabric ModInitializer example 1.21');
+    }
+    if (blueprint?.kind === 'android-rom') {
+      queries.add('LineageOS device tree BoardConfig.mk example');
+    }
+
+    const apis = detectApiRecommendations(prompt, blueprint);
+    for (const api of apis.slice(0, 3)) {
+      if (api.docs) { queries.add(`${api.name} API documentation`); }
+      else { queries.add(`${api.name} npm example`); }
+    }
+
+    queries.add(base);
+    if (/\b(api|sdk|lib|framework|npm|discord|react|node|python|bot)\b/i.test(prompt)) {
       queries.add(`${base} documentación oficial`);
-      queries.add(`${base} ejemplo código`);
+      queries.add(`${base} ejemplo código github`);
     } else {
       queries.add(`${base} tutorial`);
     }
 
-    return [...queries].slice(0, 3);
+    return [...queries].slice(0, 5);
   }
 
   /**
@@ -1317,9 +1489,9 @@ export class OllamaClient {
    */
   async researchWeb(
     prompt: string,
-    options: { forAgent?: boolean } = {}
+    options: { forAgent?: boolean; blueprint?: ProjectBlueprint | null } = {}
   ): Promise<{ context: string; resultCount: number }> {
-    const queries = this.buildResearchQueries(prompt);
+    const queries = this.buildResearchQueries(prompt, options.blueprint);
     const results = await this.searchWebMulti(queries);
 
     if (results.length === 0) {
@@ -1339,7 +1511,9 @@ export class OllamaClient {
     if (!options.forAgent) {
       context += '\n---\n\nUsa esta información para responder:\n\n';
     } else {
-      context += '\nAplica lo aprendido en los archivos con bloques ACCION.\n';
+      context +=
+        '\nAplica lo aprendido en los archivos con bloques ACCION.\n' +
+        'Usa APIs/librerías oficiales encontradas — no inventes endpoints.\n';
     }
 
     return { context, resultCount: results.length };
@@ -1357,7 +1531,7 @@ export class OllamaClient {
     const lastMessage = messages[messages.length - 1]?.content || '';
 
     let webContext = '';
-    if (this.useInternet || this.needsWebSearch(lastMessage)) {
+    if (this.needsWebSearch(lastMessage)) {
       onToken('🔍 Investigando en internet...\n\n');
       const { context } = await this.researchWeb(lastMessage);
       webContext = context;
@@ -1379,21 +1553,27 @@ export class OllamaClient {
   /**
    * Detecta si una pregunta necesita búsqueda web.
    */
-  private needsWebSearch(text: string): boolean {
+  needsWebSearch(text: string): boolean {
     const webTriggers = [
       'qué es', 'que es', 'quien es', 'quién es',
-      'busca', 'buscar', 'internet', 'web',
-      'actualidad', 'noticias', 'último', 'ultima',
+      'busca', 'buscar', 'internet', 'web', 'online',
+      'actualidad', 'noticias', 'último', 'ultima', 'última versión',
       'precio', 'cotización', 'tiempo', 'clima',
       'cómo se hace', 'como se hace', 'tutorial',
-      'documentación', 'documentacion', 'docs',
-      'versión actual', 'version actual', 'latest',
+      'documentación', 'documentacion', 'docs', 'documentacion oficial',
+      'versión actual', 'version actual', 'latest', 'release',
       '2024', '2025', '2026', 'hoy', 'ayer',
-      'reciente', 'nuevo', 'nueva'
+      'reciente', 'nuevo', 'nueva', 'actualizado',
+      'instalar', 'npm ', 'pip ', 'cargo ', 'api de', 'api ', 'apis ',
+      'error ', 'stackoverflow', 'github.com', 'github ',
+      'bot ', 'discord', 'telegram', 'crea ', 'crear ', 'creame',
+      'integra', 'conecta', 'librería', 'libreria', 'sdk',
+      'clona', 'clone', 'publica', 'sube a github',
+      'openweather', 'trivia', 'clima', 'weather',
     ];
-    
+
     const lowerText = text.toLowerCase();
-    return webTriggers.some(trigger => lowerText.includes(trigger));
+    return webTriggers.some((trigger) => lowerText.includes(trigger));
   }
 
   /** Obtener si el modo internet está activo */

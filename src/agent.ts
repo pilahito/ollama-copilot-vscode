@@ -23,10 +23,46 @@
 
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path   from 'path';
 import { OllamaClient } from './ollamaClient';
-import { GitHubService, GitHubAgentContext } from './githubService';
+import { GitHubService, type GitHubAgentContext } from './githubService';
+import {
+  detectBlueprint,
+  inferFeatureModules,
+  sortActionsByDependency,
+  wantsDiscordBot,
+  type ProjectBlueprint,
+} from './projectBlueprints';
+import { getEffectivePrompt } from './promptSettings';
+import { enrichUserMessage, intentUnderstandingRules } from './userIntent';
+import {
+  buildApiGuidanceBlock,
+  detectApiRecommendations,
+  shouldAgentResearchWeb,
+} from './apiGuidance';
+import { buildGitHubCommonSenseBlock } from './githubGuidance';
+import {
+  buildFunctionalRequirementsBlock,
+  functionalUnderstandingRules,
+  isSkeletonOrPlaceholder,
+  scoreFunctionalQuality,
+} from './codeQuality';
+import {
+  ReferenceLearner,
+  shouldLearnFromReferences,
+} from './referenceLearner';
+import {
+  buildIdeAgentPromptBlock,
+  compileAndInstallSelf,
+  executeVscodeAction,
+  isAgentIdeModeEnabled,
+  isAgentSelfModifyEnabled,
+  isLocalCopilotWorkspace,
+  parseVscodeActions,
+  type VscodeAction,
+} from './vscodeManager';
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +93,7 @@ export interface AgentResult {
   actions:     FileAction[];
   commands:    CommandAction[];
   githubTools: GitHubToolAction[];
+  vscodeActions: VscodeAction[];
 }
 
 // ── Constantes ────────────────────────────────────────────────────────────────
@@ -74,7 +111,7 @@ const RELEVANT_EXTENSIONS = new Set([
   '.ts', '.js', '.tsx', '.jsx', '.java', '.kt', '.py',
   '.yml', '.yaml', '.json', '.md', '.html', '.css', '.scss',
   '.sh', '.sql', '.conf', '.properties', '.env', '.gitignore',
-  '.xml', '.gradle', '.toml', '.rs', '.go', '.php', '.rb',
+  '.xml', '.gradle', '.toml', '.mk', '.rs', '.go', '.php', '.rb',
   '.c', '.cpp', '.h', '.hpp', '.vue', '.svelte'
 ]);
 
@@ -86,16 +123,19 @@ const IGNORE_DIRS = new Set([
 const KNOWN_FILENAMES = new Set([
   'package.json', 'tsconfig.json', 'Dockerfile', 'Makefile', 'README.md',
   '.gitignore', '.env.example', 'index.js', 'index.ts', 'main.py', 'app.py',
+  'plugin.yml', 'fabric.mod.json', 'mods.toml',
+  'build.gradle', 'settings.gradle', 'gradle.properties',
   '.gitkeep', '.keep',
 ]);
 
-const PATH_HINT_RE = /(?:^|[/\\])(?:src|lib|server|bot|api)[/\\][\w./-]+\.\w{1,8}$/i;
+const PATH_HINT_RE = /(?:^|[/\\])(?:src|lib|server|bot|api|device|scripts)[/\\][\w./-]+\.\w{1,8}$/i;
 
 /** Extensiones de código ejecutable que el agente debe escribir (no documentación). */
 const CODE_EXTENSIONS = new Set([
   '.ts', '.js', '.tsx', '.jsx', '.mjs', '.cjs', '.py', '.java', '.kt',
   '.go', '.rs', '.php', '.rb', '.vue', '.svelte', '.sh', '.sql',
   '.c', '.cpp', '.h', '.hpp', '.cs', '.swift',
+  '.html', '.css', '.scss',
 ]);
 
 const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst', '.adoc']);
@@ -126,6 +166,7 @@ interface ProjectProfile {
   foldersToCreate?: string[];
   /** Distribución modular esperada para esta petición. */
   architecture?: ArchitecturePlan;
+  blueprint?: ProjectBlueprint;
 }
 
 /** Entorno local y SSH configurado en VS Code. */
@@ -181,10 +222,21 @@ export class LocalAgent {
     onProgress('🔍 Escaneando estructura del proyecto...');
     const projectTree = await this.scanProjectStructure(rootPath);
 
-    onProgress('🧠 Analizando qué archivos son relevantes para tu petición...');
-    const relevantFiles = await this.identifyRelevantFiles(userPrompt, projectTree, rootPath, model);
+    const entryPointsEarly = await this.getProjectEntryPoints(rootPath);
+    const primaryRel = entryPointsEarly[0]
+      ? path.relative(rootPath, entryPointsEarly[0]).replace(/\\/g, '/')
+      : 'index.js';
+    const hasPkg = projectTree.some((p) => p.endsWith('package.json'));
+    const blueprint = detectBlueprint(userPrompt, [], hasPkg, entryPointsEarly.length > 0, primaryRel);
+    if (blueprint) {
+      onProgress(`📋 ${blueprint.label}: ${blueprint.planSteps.join(' → ')}`);
+    }
 
-    const entryPoints = await this.getProjectEntryPoints(rootPath);
+    onProgress('🧠 Analizando qué archivos son relevantes para tu petición...');
+    const agentModel = model ?? this.ollama.getModelForTask('agent');
+    const relevantFiles = await this.identifyRelevantFiles(userPrompt, projectTree, rootPath, agentModel);
+
+    const entryPoints = entryPointsEarly;
     const filesToRead = [...new Set([...entryPoints, ...relevantFiles])].slice(0, MAX_CONTEXT_FILES);
 
     onProgress(`📂 Leyendo ${filesToRead.length} archivo(s) relevante(s)...`);
@@ -192,31 +244,54 @@ export class LocalAgent {
 
     const projectName = workspaceFolders[0].name;
     let githubContext = '';
+    let ghCtx: GitHubAgentContext | undefined;
     if (this.github) {
       onProgress('🐙 Leyendo estado Git/GitHub...');
-      const ghCtx = await this.github.getAgentContext(rootPath, projectName);
+      ghCtx = await this.github.getAgentContext(rootPath, projectName);
       githubContext = this.formatGitHubContextForAgent(ghCtx);
     }
 
     let webContext = '';
-    if (this.ollama.isInternetEnabled()) {
-      onProgress('🌐 +Internet activo: investigando en la web...');
-      const research = await this.ollama.researchWeb(userPrompt, { forAgent: true });
+    const learner = new ReferenceLearner();
+
+    if (shouldLearnFromReferences(userPrompt, blueprint)) {
+      if (this.ollama.isInternetEnabled()) {
+        onProgress('🔎 Investigando proyectos similares en GitHub y guías open-source...');
+      }
+      const ref = await learner.resolveReferences(userPrompt, blueprint, {
+        internetEnabled: this.ollama.isInternetEnabled(),
+        searchMulti: (queries) => this.ollama.searchWebMulti(queries, 14),
+      });
+      if (ref?.context) {
+        webContext += ref.context;
+        onProgress(ref.summary);
+      }
+    }
+
+    const wantsWebResearch = this.ollama.isInternetEnabled() && (
+      this.ollama.needsWebSearch(userPrompt) ||
+      shouldAgentResearchWeb(userPrompt, blueprint)
+    );
+    if (wantsWebResearch) {
+      onProgress('🌐 +Internet: investigando APIs y documentación...');
+      const research = await this.ollama.researchWeb(userPrompt, { forAgent: true, blueprint });
       if (research.resultCount > 0) {
-        webContext = research.context;
-        onProgress(`📚 ${research.resultCount} resultado(s) web añadidos al agente`);
-      } else {
+        webContext += research.context;
+        onProgress(`📚 ${research.resultCount} resultado(s) API/docs añadidos al agente`);
+      } else if (!webContext) {
         onProgress('⚠️ Búsqueda web sin resultados (DDG limitado); el agente usa código local + Ollama');
       }
     }
 
     onProgress('⚙️ Generando código y aplicando cambios...');
-    const result = await this.generateSolution(
+    let result = await this.generateSolution(
       userPrompt, projectTree, fileContents, rootPath, entryPoints,
-      model, onProgress, webContext, githubContext, projectName
+      agentModel, onProgress, webContext, githubContext, projectName, ghCtx
     );
+    result = this.enrichWithAutoCommitPush(result, userPrompt, rootPath);
 
-    const hasWork = result.actions.length > 0 || result.commands.length > 0 || result.githubTools.length > 0;
+    const hasWork = result.actions.length > 0 || result.commands.length > 0
+      || result.githubTools.length > 0 || result.vscodeActions.length > 0;
 
     if (hasWork) {
       const approved = await this.requestConfirmation(result, onProgress);
@@ -232,18 +307,44 @@ export class LocalAgent {
 
       if (result.actions.length > 0) {
         const normalized = await this.normalizeActionTypes(result.actions, rootPath);
-        onProgress(`✏️ Aplicando ${normalized.length} cambio(s) en el proyecto...`);
-        for (const action of normalized) {
+        const primaryEntry = entryPoints[0]
+          ? path.relative(rootPath, entryPoints[0]).replace(/\\/g, '/')
+          : 'index.js';
+        const ordered = sortActionsByDependency(normalized, primaryEntry) as FileAction[];
+        onProgress(`✏️ Aplicando ${ordered.length} cambio(s) en orden lógico...`);
+        for (const action of ordered) {
           const icon = action.type === 'create' ? '🆕' : action.type === 'delete' ? '🗑️' : '✏️';
           onProgress(`${icon} ${action.filePath}`);
         }
-        await this.applyActions(normalized, rootPath);
-        await this.verifyAppliedActions(normalized, rootPath, onProgress);
+        await this.applyActions(ordered, rootPath);
+        await this.verifyAppliedActions(ordered, rootPath, onProgress);
       }
 
       if (result.githubTools.length > 0 && this.github) {
         onProgress(`🐙 Ejecutando ${result.githubTools.length} acción(es) GitHub...`);
         await this.executeGitHubTools(result.githubTools, rootPath, projectName, onProgress);
+      }
+
+      if (result.vscodeActions.length > 0) {
+        onProgress(`🧠 Agente IDE: ${result.vscodeActions.length} acción(es) VS Code…`);
+        for (const va of result.vscodeActions) {
+          await executeVscodeAction(va, rootPath, onProgress, this.outputChannel);
+        }
+      }
+
+      if (
+        isAgentSelfModifyEnabled() &&
+        isLocalCopilotWorkspace(rootPath) &&
+        result.actions.some((a) => /^src\//.test(a.filePath) || a.filePath.endsWith('.ts'))
+      ) {
+        const auto = await vscode.window.showInformationMessage(
+          '¿Recompilar e instalar Local Copilot con los cambios del agente?',
+          'Sí, compilar',
+          'No'
+        );
+        if (auto === 'Sí, compilar') {
+          await compileAndInstallSelf(rootPath, onProgress, this.outputChannel);
+        }
       }
     } else if (this.looksLikeGitHubTask(userPrompt)) {
       onProgress('⚠️ El modelo no generó acciones GitHub. Prueba: "publica en GitHub", "haz commit y push" o "git status".');
@@ -261,6 +362,111 @@ export class LocalAgent {
     }
 
     onProgress('✅ Listo.');
+    return result;
+  }
+
+  /**
+   * Modo Profesor con corrección: diagnostica el fallo y escribe el fix en el archivo del editor.
+   */
+  async handleTeacherFix(
+    userPrompt:      string,
+    absolutePath:    string,
+    fileContent:     string,
+    diagnosticsBlock: string,
+    onProgress:      (msg: string) => void,
+    model?:          string
+  ): Promise<AgentResult> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders?.length) {
+      throw new Error('No hay ninguna carpeta de proyecto abierta en VS Code.');
+    }
+    const rootPath = workspaceFolders[0].uri.fsPath;
+    const relPath  = path.relative(rootPath, absolutePath).replace(/\\/g, '/');
+
+    onProgress('🔍 Profesor: leyendo errores y diagnosticando...');
+
+    const contextBlock =
+      `### Archivo: ${relPath}\n\`\`\`\n${fileContent}\n\`\`\``;
+    const diagSection = diagnosticsBlock
+      ? `\n### Errores detectados (Problems / linter)\n${diagnosticsBlock}\n`
+      : '\n(Sin errores en Problems — diagnostica por lógica del código.)\n';
+
+    const useModel = model ?? this.ollama.getModelForTask('teacher');
+    const userMessage =
+      enrichUserMessage(userPrompt) + `\n\n` +
+      `${diagSection}\n${contextBlock}\n\n` +
+      `Corrige **${relPath}**. Emite EXPLICACION (diagnóstico) + ACCION MODIFICAR con el archivo COMPLETO corregido.`;
+
+    let fullResponse = '';
+    onProgress(`🎓 Profesor (${useModel}): preparando corrección...`);
+    await this.ollama.agentChatStream(
+      [{ role: 'system', content: getEffectivePrompt('teacherFix') }, { role: 'user', content: userMessage }],
+      (token) => { fullResponse += token; },
+      useModel
+    );
+
+    let result = this.parseAgentResponse(
+      fullResponse,
+      userPrompt,
+      [absolutePath],
+      rootPath
+    );
+
+    // Solo el archivo del editor (evita que reescriba medio proyecto)
+    result.actions = result.actions.filter((a) => {
+      const fp = a.filePath.replace(/\\/g, '/');
+      return fp === relPath || fp.endsWith(`/${relPath}`) || path.basename(fp) === path.basename(relPath);
+    });
+
+    if (result.actions.length === 0) {
+      onProgress('🔄 Reintentando con formato ACCION estricto...');
+      const retryMsg =
+        `CORRECCIÓN OBLIGATORIA: emite ACCION: MODIFICAR | RUTA: ${relPath} | MOTIVO: fix\n` +
+        `<<CONTENIDO>>\n(código completo corregido)\n<<FIN>>`;
+      fullResponse = '';
+      await this.ollama.agentChatStream(
+        [
+          { role: 'system', content: getEffectivePrompt('teacherFix') },
+          { role: 'user',   content: userMessage },
+          { role: 'user',   content: retryMsg },
+        ],
+        (token) => { fullResponse += token; },
+        useModel
+      );
+      result = this.parseAgentResponse(fullResponse, userPrompt, [absolutePath], rootPath);
+      result.actions = result.actions.filter((a) => {
+        const fp = a.filePath.replace(/\\/g, '/');
+        return fp === relPath || fp.endsWith(`/${relPath}`);
+      });
+    }
+
+    const hasWork = result.actions.length > 0 || result.commands.length > 0;
+
+    if (hasWork) {
+      const approved = await this.requestConfirmation(result, onProgress);
+      if (!approved) {
+        onProgress('🚫 Corrección cancelada — solo se muestra el diagnóstico.');
+        return result;
+      }
+      if (result.commands.length > 0) {
+        onProgress(`📦 Instalando dependencias (${result.commands.length})...`);
+        await this.executeCommands(result.commands, rootPath, onProgress);
+      }
+      if (result.actions.length > 0) {
+        const normalized = await this.normalizeActionTypes(result.actions, rootPath);
+        onProgress(`✏️ Profesor: aplicando corrección en \`${relPath}\`...`);
+        await this.applyActions(normalized, rootPath);
+        await this.verifyAppliedActions(normalized, rootPath, onProgress);
+        try {
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath));
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch { /* ok */ }
+      }
+      onProgress('✅ Corrección aplicada. Revisa el archivo y los errores en Problems.');
+    } else {
+      onProgress('⚠️ No pude generar un fix automático. Lee el diagnóstico arriba o reformula la petición.');
+    }
+
     return result;
   }
 
@@ -376,11 +582,12 @@ export class LocalAgent {
     onProgress?:  (msg: string) => void,
     webContext = '',
     githubContext = '',
-    projectName = 'proyecto'
+    projectName = 'proyecto',
+    ghCtx?: GitHubAgentContext
   ): Promise<AgentResult> {
     return this.generateSolutionWithRetry(
       userPrompt, projectTree, fileContents, rootPath, entryPoints,
-      model, webContext, githubContext, projectName, onProgress
+      model, webContext, githubContext, projectName, onProgress, ghCtx
     );
   }
 
@@ -408,19 +615,32 @@ export class LocalAgent {
     inferFolder('assets', /\b(assets?|recursos|est[aá]ticos)\b/i);
     inferFolder('uploads', /\b(uploads?|subidas?)\b/i);
     inferFolder('data', /\b(datos|data|json\s+de\s+datos)\b/i);
+    inferFolder('radio', /\b(radio|emisora|fm|streaming\s+radio)\b/i);
+    const preferSpanish = /\b(musica|música|juegos?|caperta|carpeta)\b/i.test(userPrompt);
+    if (/\b(musica|música|music|spotify|playlist|cancion|canción)\b/i.test(userPrompt)) {
+      const f = preferSpanish ? 'musica' : 'music';
+      if (!folders.includes(f)) { folders.push(f); }
+    }
+    if (/\b(juegos?|games?|minijuegos?|trivia|quiz)\b/i.test(userPrompt)) {
+      const f = preferSpanish ? 'juegos' : 'games';
+      if (!folders.includes(f)) { folders.push(f); }
+    }
 
     const hasCommandsDir = projectTree.some((p) => /[/\\]commands[/\\]?$/i.test(p) || p.endsWith('/commands'));
     const hasSrcDir      = projectTree.some((p) => /[/\\]src[/\\]/i.test(p));
     const cmdBase        = hasCommandsDir ? 'commands/' : (hasSrcDir ? 'src/commands/' : 'commands/');
-    const isDiscord      = stack.includes('Discord.js');
+    const isDiscord      = stack.includes('Discord.js') || wantsDiscordBot(userPrompt);
 
     const featureSlug = (word: string): string =>
       word.toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
     if (isDiscord) {
-      if (folders.includes('multimedia') || /\bmultimedia\b/i.test(userPrompt)) {
-        modules.push(`${cmdBase}multimedia.js`);
+      const features = inferFeatureModules(userPrompt, cmdBase);
+      for (const f of features.folders) {
+        if (!folders.includes(f)) { folders.push(f); }
       }
+      modules.push(...features.modules);
+
       const cmdMatch = userPrompt.match(/\bcomando\s+!?([\w-]+)/i);
       if (cmdMatch) {
         modules.push(`${cmdBase}${featureSlug(cmdMatch[1])}.js`);
@@ -531,18 +751,46 @@ export class LocalAgent {
     const architecture = this.buildArchitecturePlan(
       userPrompt, primaryEntry, stack, projectTree, fileContents
     );
-    const foldersToCreate = architecture.folders;
+    const hasPkg = Object.keys(fileContents).some((p) => p.endsWith('package.json'));
+    const hasIndex = Object.keys(fileContents).some((p) =>
+      p.endsWith('index.js') || p.endsWith('index.ts')
+    );
+    const blueprint = detectBlueprint(userPrompt, stack, hasPkg, hasIndex, primaryEntry);
+
+    const foldersToCreate = blueprint
+      ? blueprint.folders
+      : architecture.folders;
     let moduleToCreate: string | undefined;
 
-    let hint =
-      `SENTIDO COMÚN: ${architecture.summary} ` +
-      `${primaryEntry} es solo el punto de entrada (require, registrar, login) — no metas ahí toda la lógica.`;
+    let hint = blueprint
+      ? blueprint.hint
+      : `SENTIDO COMÚN: ${architecture.summary} ` +
+        `${primaryEntry} es solo el punto de entrada (require, registrar, login) — no metas ahí toda la lógica.`;
 
-    if (this.wantsNewModuleFile(userPrompt)) {
-      moduleToCreate = 'chatbot.js';
+    if (blueprint) {
+      const mods = blueprint.modulesToCreate.join(', ');
+      const fks = blueprint.folders.map((f) => `${f}/.gitkeep`).join(', ');
       hint =
-        `OBLIGATORIO: CREAR chatbot.js (lógica) + MODIFICAR ${primaryEntry} (solo require/registro). ` +
-        `Dos bloques ACCION con <<CONTENIDO>> completo.`;
+        `${blueprint.hint} PLAN: ${blueprint.planSteps.join(' → ')}. ` +
+        (fks ? `CREAR ${fks} + ` : '') +
+        `CREAR ${mods} + ` +
+        (blueprint.filesToModify.length
+          ? `MODIFICAR ${blueprint.filesToModify.join(', ')} (solo cablear).`
+          : 'Sin tocar entry si no existe aún.');
+    } else if (this.wantsNewModuleFile(userPrompt)) {
+      moduleToCreate = this.extractExplicitNewFile(userPrompt)
+        ?? (/\bchatbot\b/i.test(userPrompt) ? 'chatbot.js' : undefined);
+      if (moduleToCreate) {
+        hint =
+          `OBLIGATORIO: CREAR ${moduleToCreate} con toda la lógica pedida. ` +
+          (moduleToCreate === 'chatbot.js'
+            ? `MODIFICAR ${primaryEntry} (solo require/registro). Dos bloques ACCION.`
+            : `Un bloque ACCION CREAR con <<CONTENIDO>> completo.`);
+      } else {
+        hint =
+          `OBLIGATORIO: CREAR el archivo/módulo pedido (ruta explícita en ACCION) ` +
+          `+ MODIFICAR ${primaryEntry} solo si hace falta cablear.`;
+      }
     } else if (architecture.modulesToCreate.length > 0) {
       const mods = architecture.modulesToCreate.join(', ');
       const fks  = foldersToCreate.map((f) => `${f}/.gitkeep`).join(', ');
@@ -560,7 +808,27 @@ export class LocalAgent {
       hint += ' SSH: COMANDO para diagnóstico; scripts en .sh/.conf/.yml.';
     }
 
-    return { type, primaryEntry, stack, hint, moduleToCreate, foldersToCreate, architecture };
+    const mergedArch: ArchitecturePlan = blueprint
+      ? {
+          folders:          blueprint.folders,
+          modulesToCreate:  blueprint.modulesToCreate,
+          filesToModify:    blueprint.filesToModify.length
+            ? blueprint.filesToModify
+            : architecture.filesToModify,
+          summary:          blueprint.summary,
+        }
+      : architecture;
+
+    return {
+      type: blueprint?.label ?? type,
+      primaryEntry,
+      stack,
+      hint,
+      moduleToCreate,
+      foldersToCreate,
+      architecture: mergedArch,
+      blueprint,
+    };
   }
 
   /** Extrae nombres de carpetas pedidas en lenguaje natural. */
@@ -585,6 +853,16 @@ export class LocalAgent {
       }
     }
 
+    const preferSpanish = /\b(musica|música|juegos?|caperta|carpeta)\b/i.test(prompt);
+    if (/\b(radio|emisora)\b/i.test(prompt)) { found.add('radio'); }
+    if (/\b(musica|música|music|spotify|playlist)\b/i.test(prompt)) {
+      found.add(preferSpanish ? 'musica' : 'music');
+    }
+    if (/\b(juegos?|games?|minijuegos?|trivia)\b/i.test(prompt)) {
+      found.add(preferSpanish ? 'juegos' : 'games');
+    }
+    if (/\bmultimedia\b/i.test(prompt)) { found.add('multimedia'); }
+
     return [...found];
   }
 
@@ -601,11 +879,32 @@ export class LocalAgent {
   }
 
   /** Si el usuario pidió carpetas y el modelo no las creó, inyecta .gitkeep. */
+  private readStackFromPackage(rootPath: string): string[] {
+    const stack: string[] = [];
+    try {
+      const raw = fs.readFileSync(path.join(rootPath, 'package.json'), 'utf8');
+      const deps = JSON.stringify(JSON.parse(raw).dependencies ?? {});
+      if (/discord\.js/.test(deps)) { stack.push('Discord.js'); }
+      if (/express/.test(deps))       { stack.push('Express'); }
+    } catch { /* sin package.json */ }
+    return stack;
+  }
+
   private injectFolderCreateActions(
     actions: FileAction[],
-    userPrompt: string
+    userPrompt: string,
+    rootPath?: string
   ): FileAction[] {
-    const folders = this.extractRequestedFolders(userPrompt);
+    const folders = [...new Set(this.extractRequestedFolders(userPrompt))];
+    if (rootPath) {
+      const hasPkg = fs.existsSync(path.join(rootPath, 'package.json'));
+      const bp = detectBlueprint(userPrompt, this.readStackFromPackage(rootPath), hasPkg, true, 'index.js');
+      if (bp) {
+        for (const f of bp.folders) {
+          if (!folders.includes(f)) { folders.push(f); }
+        }
+      }
+    }
     if (folders.length === 0) {
       return actions;
     }
@@ -636,6 +935,12 @@ export class LocalAgent {
 
   /** Ruta de módulo sugerida cuando Ollama pone una ruta inválida (evita index.js). */
   private inferModulePathFromPrompt(prompt: string): string | null {
+    if (/\b(p[aá]gina\s+web|sitio\s+web|html)\b/i.test(prompt) && !/\b(juego|game)\b/i.test(prompt)) {
+      return 'public/index.html';
+    }
+    if (/\b(juego|game|snake|tetris)\b/i.test(prompt)) {
+      return 'public/js/juego.js';
+    }
     if (/\bmultimedia\b/i.test(prompt)) {
       return 'commands/multimedia.js';
     }
@@ -649,8 +954,30 @@ export class LocalAgent {
     return null;
   }
 
+  /** Nombre de archivo explícito en la petición (ej. "crea test.txt", "archivo foo.js"). */
+  private extractExplicitNewFile(prompt: string): string | undefined {
+    const patterns = [
+      /\b(?:crea(?:r)?|genera(?:r)?)\s+(?:el\s+)?archivo\s+["']?([\w./-]+\.\w{1,8})["']?/i,
+      /\b(?:crea(?:r)?|genera(?:r)?)\s+["']?([\w./-]+\.\w{1,8})["']?(?:\s+con|\s+que|\s*$)/i,
+      /\barchivo\s+["']?([\w./-]+\.\w{1,8})["']?/i,
+    ];
+    for (const re of patterns) {
+      const m = prompt.match(re);
+      const name = m?.[1]?.trim();
+      if (name && this.isValidFilePath(name) && !name.startsWith('.')) {
+        return name.replace(/\\/g, '/');
+      }
+    }
+    const dotfile = prompt.match(/\b(?:crea(?:r)?|genera(?:r)?)\s+(\.[\w.-]+)/i);
+    if (dotfile?.[1] && this.isValidFilePath(dotfile[1])) {
+      return dotfile[1];
+    }
+    return undefined;
+  }
+
   /** El usuario pide un archivo/módulo nuevo (chatbot.js, etc.). */
   private wantsNewModuleFile(prompt: string): boolean {
+    if (this.extractExplicitNewFile(prompt)) { return true; }
     return /\b(crear|crea)\b.*\b(archivo|chatbot|m[oó]dulo)\b/i.test(prompt) ||
       /\b(archivo|m[oó]dulo)\b.*\b(chatbot|bot)\b/i.test(prompt) ||
       /\bchatbot\.js\b/i.test(prompt);
@@ -695,7 +1022,7 @@ export class LocalAgent {
   }
 
   private looksLikeGitHubTask(prompt: string): boolean {
-    return /\b(github|git\s+init|git\s+status|git\s+add|git\s+commit|git\s+push|gh\s+repo|gh\s+pr|gh\s+release|publica(?:r)?\s+(?:en\s+)?github|sube(?:r)?\s+(?:a\s+)?github|subir\s+(?:a\s+)?github|repositorio(?:\s+en\s+github)?|repo\s+remoto|commit\s+y\s+push|hacer\s+push|crear\s+release|pull\s+request|origin\s+remoto)\b/i
+    return /\b(github|git\s+init|git\s+status|git\s+add|git\s+commit|git\s+push|gh\s+repo|gh\s+pr|gh\s+release|publica(?:r)?\s+(?:en\s+)?github|sube(?:r)?\s+(?:a\s+)?github|subir\s+(?:a\s+)?github|repositorio(?:\s+en\s+github)?|repo\s+remoto|commit\s+y\s+push|hacer\s+push|crear\s+release|pull\s+request|origin\s+remoto|clona?r?\s+(?:un\s+)?repo|git\s+clone|gh\s+repo\s+clone|fork|ejemplo\s+de\s+github)\b/i
       .test(prompt);
   }
 
@@ -722,26 +1049,77 @@ export class LocalAgent {
     return lines.join('\n');
   }
 
-  private buildGitHubToolsBlock(githubContext: string, taskMode: AgentTaskMode): string {
+  private buildGitHubToolsBlock(
+    githubContext: string,
+    taskMode: AgentTaskMode,
+    ghCtx?: GitHubAgentContext,
+    userPrompt = '',
+    isImplementationTask = false
+  ): string {
     if (!githubContext || !this.github) { return ''; }
 
     const roleHint = taskMode === 'github'
       ? 'La tarea principal es Git/GitHub — usa bloques GITHUB o COMANDO git/gh.\n'
-      : 'Si el usuario pide publicar, commit o push, añade bloques GITHUB además del código.\n';
+      : 'Usa GitHub solo cuando el usuario lo pida o cuando tenga sentido (ver bloque sentido común).\n';
+
+    const autoCommit = this.isAgentAutoCommitPushEnabled();
+    const policyBlock =
+      `POLÍTICA DEL PROYECTO:\n` +
+      `- Se **aceptan recomendaciones** y **variantes** (forks, temas, configs) bajo MIT.\n` +
+      (autoCommit
+        ? `- Con agentAutoCommitPush activo, COMMIT_PUSH se puede inyectar tras ACCION si hay repo.\n`
+        : `- Tras ACCION con cambios, emite GITHUB: COMMIT_PUSH solo si el usuario quiere subir al remoto.\n`) +
+      `- Para integrar en el repo oficial pilahito/ollama-copilot-vscode: Pull Request tras el push.\n\n`;
+
+    const commonSense = ghCtx
+      ? buildGitHubCommonSenseBlock(ghCtx, userPrompt, isImplementationTask)
+      : '';
 
     return (
       `═══ GITHUB / GIT (herramientas del agente) ═══\n` +
       `${githubContext}\n\n` +
+      commonSense +
+      policyBlock +
       roleHint +
       `FORMATO GITHUB (la extensión ejecuta esto automáticamente):\n` +
       `GITHUB: PUBLICAR | REPO: nombre-repo | PRIVADO: no | MOTIVO: <razón>\n` +
       `GITHUB: COMMIT_PUSH | MENSAJE: mensaje del commit | MOTIVO: <razón>\n` +
       `GITHUB: STATUS | MOTIVO: <razón>\n\n` +
+      `Clonar ejemplo: COMANDO: gh repo clone discordjs/guide --depth 1 | MOTIVO: referencia discord.js\n` +
       `También válido: COMANDO: git add -A | MOTIVO: ...\n` +
       `COMANDO: git commit -m "mensaje" | MOTIVO: ...\n` +
       `COMANDO: git push | MOTIVO: ...\n` +
       `COMANDO: gh repo create NOMBRE --public --source=. --push | MOTIVO: ...\n\n`
     );
+  }
+
+  private isAgentAutoCommitPushEnabled(): boolean {
+    return vscode.workspace.getConfiguration('local').get<boolean>('agentAutoCommitPush', true);
+  }
+
+  /** Tras modificar archivos, inyecta commit+push al repo del usuario si no lo pidió Ollama. */
+  private enrichWithAutoCommitPush(
+    result: AgentResult,
+    userPrompt: string,
+    rootPath: string
+  ): AgentResult {
+    if (!this.github || !this.isAgentAutoCommitPushEnabled()) { return result; }
+    if (result.actions.length === 0) { return result; }
+    if (result.githubTools.some((t) => t.type === 'commit_push')) { return result; }
+    if (!fs.existsSync(path.join(rootPath, '.git'))) { return result; }
+
+    const summary = userPrompt.replace(/\s+/g, ' ').trim().slice(0, 72) || 'cambios del agente';
+    return {
+      ...result,
+      githubTools: [
+        ...result.githubTools,
+        {
+          type:    'commit_push',
+          message: `feat(agent): ${summary}`,
+          reason:  'Subir cambios al repositorio del usuario (recomendaciones/variantes → tu repo)',
+        },
+      ],
+    };
   }
 
   private classifyTask(userPrompt: string): AgentTaskMode {
@@ -759,14 +1137,21 @@ export class LocalAgent {
     return (
       `═══ EXPERTISE MULTI-PLATAFORMA ═══\n` +
       `Eres experto senior en TODOS estos ámbitos (aplica el que corresponda a la tarea):\n\n` +
-      `LENGUAJES: JavaScript/TypeScript, Python, Java/Kotlin, C/C++/C#, Go, Rust, PHP, Ruby, ` +
-      `Swift, SQL, Bash/PowerShell, HTML/CSS, Vue, React, Svelte, Discord.js, y más.\n\n` +
+      `LENGUAJES: JS/TS, Python, Java/Kotlin, C/C++/C#, Go, Rust, PHP, Ruby, Swift, Dart, Scala, ` +
+      `Haskell, R, Lua, Perl, Zig, Elixir, SQL, Bash/PowerShell, HTML/CSS, Vue, React, Svelte, ` +
+      `Next.js, Flutter, Solidity, WASM, MATLAB, Fortran, Assembly, Discord.js, y más.\n\n` +
       `SO & SERVIDORES:\n` +
       `- Linux: Ubuntu, Debian, CentOS, Fedora, Arch — systemd, apt/dnf/yum, ufw, cron, journalctl\n` +
       `- Windows: Server/Desktop, PowerShell, servicios, IIS, WSL, registro, tareas programadas\n` +
       `- macOS: Homebrew, launchd, redes\n\n` +
       `INFRA & OPS: SSH, Docker/Podman, Nginx/Apache, MariaDB/MySQL/PostgreSQL, Redis, ` +
-      `Git/GitHub, CI/CD, Ollama, Node/npm, Minecraft/PaperMC, Lavalink, VPN, SSL/certbot, backups.\n\n` +
+      `Git/GitHub, CI/CD, Ollama, Node/npm, Minecraft/PaperMC/Spigot/Fabric/Forge, Lavalink, VPN, SSL/certbot, backups.\n\n` +
+      `MODS / PLUGINS / ROMs:\n` +
+      `- **Plugin Minecraft** (Paper/Spigot): Java + plugin.yml + Gradle paper-api → jar en plugins/\n` +
+      `- **Mod Fabric**: fabric.mod.json + fabric-loom + ModInitializer\n` +
+      `- **Mod Forge**: mods.toml + @Mod + ForgeGradle\n` +
+      `- **Extensión VS Code**: package.json + src/extension.ts (@types/vscode)\n` +
+      `- **ROM Android**: scripts AOSP/Lineage + device tree — honesto: ZIP flashable requiere kernel + vendor blobs\n\n` +
       `CAPACIDADES:\n` +
       `- Programar y modificar código en el workspace\n` +
       `- Supervisar/analizar servidores locales o remotos vía COMANDO\n` +
@@ -815,7 +1200,10 @@ export class LocalAgent {
     profile: ProjectProfile,
     env: EnvironmentProfile,
     taskMode: AgentTaskMode,
-    githubContext = ''
+    githubContext = '',
+    rootPath = '',
+    userPrompt = '',
+    ghCtx?: GitHubAgentContext
   ): string {
     const stackLine = profile.stack.length
       ? `Stack detectado: ${profile.stack.join(', ')}.\n`
@@ -848,14 +1236,37 @@ export class LocalAgent {
         : `Eres **Local Agent**, ingeniero senior autónomo. Tu salida útil es CÓDIGO en archivos.\n` +
           `NO solo explicas: PROGRAMAS.\n`;
 
+    const agentCustom = getEffectivePrompt('agent');
+    const customBlock = agentCustom
+      ? `═══ INSTRUCCIONES PERSONALIZADAS (AGENTE) ═══\n${agentCustom}\n\n`
+      : '';
+
+    const apiBlock = buildApiGuidanceBlock(userPrompt, profile.blueprint);
+    const apiRecs = detectApiRecommendations(userPrompt, profile.blueprint);
+    const apiNpmHint = apiRecs
+      .filter((a) => a.npm)
+      .map((a) => a.npm)
+      .join(' ');
+
     return (
       antiRefusal +
       strictBlock +
       `═══ ROL ═══\n` +
       roleLine +
       `\n` +
+      customBlock +
+      apiBlock +
+      (apiNpmHint
+        ? `Paquetes npm sugeridos para esta tarea: ${apiNpmHint}\n\n`
+        : '') +
       this.buildExpertiseBlock() +
-      this.buildGitHubToolsBlock(githubContext, taskMode) +
+      this.buildGitHubToolsBlock(
+        githubContext,
+        taskMode,
+        ghCtx,
+        userPrompt,
+        taskMode === 'code' || taskMode === 'mixed'
+      ) +
       this.buildSshBlock(env, taskMode) +
       `═══ PERFIL DEL PROYECTO ═══\n` +
       `Tipo: ${profile.type}\n` +
@@ -863,19 +1274,41 @@ export class LocalAgent {
       `Archivo principal: ${profile.primaryEntry}\n` +
       `Guía: ${profile.hint}\n\n` +
       `═══ SENTIDO COMÚN DE PROGRAMADOR (OBLIGATORIO) ═══\n` +
-      `- Carpeta para datos/archivos del dominio (multimedia/, assets/, data/…)\n` +
-      `- Un módulo .js/.ts por funcionalidad (commands/foo.js, services/bar.js)\n` +
-      `- ${profile.primaryEntry} SOLO: cliente, require(), registrar comandos/rutas, login\n` +
-      `- PROHIBIDO meter toda la lógica nueva solo en ${profile.primaryEntry}\n` +
-      (profile.architecture
-        ? `- Para ESTA tarea: ${profile.architecture.summary}\n`
-        : '') +
+      `- Organiza como un senior: **una carpeta por funcionalidad** — cualquier experto debe entender el repo en 10 s\n` +
+      `- Web: public/index.html + public/css/*.css + public/js/*.js (nunca todo inline)\n` +
+      `- Discord: commands/ + events/ + carpeta por feature (radio/, musica/, juegos/) + index.js solo Client y login\n` +
+      `- Bot con radio+música+juegos: radio/player.js, musica/player.js, juegos/trivia.js — commands/*.js solo delega\n` +
+      `- API: routes/ + controllers/ + index.js solo express.listen\n` +
+      `- Juegos web: lógica en public/js/juego.js, main.js solo inicia\n` +
+      `- ${profile.primaryEntry} SOLO: arranque, require(), registrar — NO toda la lógica\n` +
+      (profile.blueprint
+        ? `\n═══ PLANTILLA DETECTADA: ${profile.blueprint.label.toUpperCase()} ═══\n` +
+          `Pasos: ${profile.blueprint.planSteps.join(' → ')}\n` +
+          `${profile.blueprint.summary}\n` +
+          (profile.blueprint.commands.length
+            ? `COMANDOS npm OBLIGATORIOS si faltan deps:\n` +
+              profile.blueprint.commands.map((c) => `COMANDO: ${c.command} | MOTIVO: ${c.reason}`).join('\n') +
+              '\n'
+            : '')
+        : profile.architecture
+          ? `- Para ESTA tarea: ${profile.architecture.summary}\n`
+          : '') +
       `\n` +
-      `═══ PROTOCOLO ═══\n` +
-      `1. PLAN: qué carpetas, qué módulos nuevos y qué archivos solo cablear.\n` +
-      `2. CREAR carpetas (.gitkeep) y módulos con la lógica.\n` +
-      `3. MODIFICAR ${profile.primaryEntry} solo para conectar (require/registro).\n` +
-      `4. EMITIR un ACCION por cada archivo con <<CONTENIDO>>…<<FIN>>.\n\n` +
+      intentUnderstandingRules() +
+      functionalUnderstandingRules() +
+      buildFunctionalRequirementsBlock(userPrompt, profile.blueprint) +
+      `\n` +
+      `═══ APRENDER DE REFERENCIAS (OBLIGATORIO SI HAY CONTEXTO WEB) ═══\n` +
+      `- Si el mensaje incluye REFERENCIAS o patrones aprendidos, **úsalo como modelo** de estructura y calidad.\n` +
+      `- Con +Internet: imita arquitectura de bots/plugins open-source (commands/, events/, services/).\n` +
+      `- Sin internet: aplica patrones aprendidos guardados o plantilla local del mismo tipo.\n` +
+      `- No clones repos enteros: adapta la petición del usuario con el mismo nivel de organización.\n\n` +
+      `═══ PROTOCOLO (ORDEN ESTRICTO) ═══\n` +
+      `1. PLAN: lista numerada de carpetas → módulos → cableado\n` +
+      `2. COMANDO: npm init / npm install ANTES del código si el proyecto es nuevo\n` +
+      `3. CREAR cada módulo con código REAL (.js/.ts) — NO carpetas vacías ni .gitkeep salvo que el usuario lo pida\n` +
+      `4. MODIFICAR ${profile.primaryEntry} al FINAL (solo require/registro/login)\n` +
+      `5. Un ACCION por archivo con <<CONTENIDO>> completo (sin "..." ni omitir)\n\n` +
       `═══ REGLAS DE ARCHIVOS ═══\n` +
       `✅ PERMITIDO: .js .ts .tsx .jsx .py .go .rs y rutas como "index.js", "src/bot.ts"\n` +
       `❌ PROHIBIDO: .md .txt archivos sin extensión frases en español como nombre\n` +
@@ -884,8 +1317,19 @@ export class LocalAgent {
       `❌ PROHIBIDO: poner código solo en EXPLICACION — el código va en <<CONTENIDO>>\n` +
       `❌ PROHIBIDO: envolver <<CONTENIDO>> en \`\`\`javascript — solo código puro dentro\n` +
       `❌ PROHIBIDO: rutas absolutas /home/usuario/... — usa path.join(__dirname, "carpeta")\n\n` +
+      `═══ EJEMPLO: PÁGINA WEB ═══\n` +
+      `ACCION: CREAR | RUTA: public/index.html | MOTIVO: estructura\n<<CONTENIDO>>\n<!DOCTYPE html>…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: public/css/styles.css | MOTIVO: estilos\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: public/js/main.js | MOTIVO: interactividad\n<<CONTENIDO>>\n…\n<<FIN>>\n\n` +
+      `═══ EJEMPLO: BOT DISCORD (radio + música + juegos) ═══\n` +
+      `COMANDO: npm install discord.js dotenv | MOTIVO: dependencias\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: radio/player.js | MOTIVO: lógica de radio\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: musica/player.js | MOTIVO: cola de reproducción\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: juegos/trivia.js | MOTIVO: minijuego\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: commands/radio.js | MOTIVO: slash que llama radio/player\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: events/ready.js | MOTIVO: on ready\n<<CONTENIDO>>\n…\n<<FIN>>\n` +
+      `ACCION: CREAR | RUTA: index.js | MOTIVO: arranque — solo Client + load handlers\n<<CONTENIDO>>\n…\n<<FIN>>\n\n` +
       `═══ EJEMPLO CORRECTO (carpeta multimedia + comando) ═══\n` +
-      `ACCION: CREAR | RUTA: multimedia/.gitkeep | MOTIVO: almacén de archivos\n<<CONTENIDO>>\n# multimedia\n<<FIN>>\n` +
       `ACCION: CREAR | RUTA: commands/multimedia.js | MOTIVO: lógica listmultimedia\n<<CONTENIDO>>\n` +
       `(module.exports con fs.readdir path.join(__dirname,'../multimedia'))\n<<FIN>>\n` +
       `ACCION: MODIFICAR | RUTA: index.js | MOTIVO: registrar comando\n<<CONTENIDO>>\n` +
@@ -915,7 +1359,8 @@ export class LocalAgent {
       `<<FIN>>\n\n` +
       `GITHUB: PUBLICAR | REPO: mi-proyecto | PRIVADO: no | MOTIVO: primera publicación\n` +
       `GITHUB: COMMIT_PUSH | MENSAJE: feat: cambios del agente | MOTIVO: subir al remoto\n` +
-      `GITHUB: STATUS | MOTIVO: ver cambios pendientes\n`
+      `GITHUB: STATUS | MOTIVO: ver cambios pendientes\n` +
+      buildIdeAgentPromptBlock(rootPath)
     );
   }
 
@@ -952,11 +1397,19 @@ export class LocalAgent {
         `Dos bloques ACCION con <<CONTENIDO>> completo. La extensión aplicará los cambios — no digas al usuario que lo haga.`
       );
     }
+    if (profile.blueprint) {
+      return (
+        `Tarea "${profile.blueprint.label}": sigue el PLAN en orden. ` +
+        `${profile.blueprint.commands.length ? 'Emite COMANDO npm primero. ' : ''}` +
+        `CREA todos los módulos (${profile.blueprint.modulesToCreate.join(', ')}) ` +
+        `y ${profile.primaryEntry} al final solo para cablear. Código completo y funcional.`
+      );
+    }
     if (profile.architecture && (profile.architecture.modulesToCreate.length > 0 || profile.architecture.folders.length > 0)) {
       const arch = profile.architecture;
       return (
         `Arquitectura obligatoria: ${arch.summary} ` +
-        `Emite ACCION CREAR para cada carpeta (.gitkeep) y módulo (${arch.modulesToCreate.join(', ') || 'según plan'}), ` +
+        `Emite ACCION CREAR para cada módulo con código (${arch.modulesToCreate.join(', ') || 'según plan'}), ` +
         `luego ACCION MODIFICAR ${profile.primaryEntry} solo para require/registro. Sin \`\`\` en <<CONTENIDO>>.`
       );
     }
@@ -982,8 +1435,7 @@ export class LocalAgent {
           : 'código + servidor/Git';
 
     return (
-      `═══ TAREA ═══\n` +
-      `"${userPrompt}"\n\n` +
+      enrichUserMessage(userPrompt) + `\n\n` +
       `═══ ENTORNO ═══\n` +
       `SO local: ${env.localOs}\n` +
       (env.sshTarget ? `SSH remoto: ${this.formatSshDisplay(env)}\n` : 'SSH: no configurado (solo local)\n') +
@@ -1017,7 +1469,8 @@ export class LocalAgent {
     webContext = '',
     githubContext = '',
     projectName = 'proyecto',
-    onProgress?:  (msg: string) => void
+    onProgress?:  (msg: string) => void,
+    ghCtx?: GitHubAgentContext
   ): Promise<AgentResult> {
     const contextBlock = Object.entries(fileContents)
       .map(([fp, content]) => {
@@ -1034,7 +1487,7 @@ export class LocalAgent {
     );
 
     const attempts = [0, 1, 2];
-    let lastResult: AgentResult = { explanation: '', actions: [], commands: [], githubTools: [] };
+    let lastResult: AgentResult = { explanation: '', actions: [], commands: [], githubTools: [], vscodeActions: [] };
 
     for (const attempt of attempts) {
       const strict = attempt > 0;
@@ -1042,7 +1495,12 @@ export class LocalAgent {
         onProgress?.('🔄 Ollama no generó respuesta válida; reintentando con prompt estricto...');
       }
       const messages: { role: 'system' | 'user'; content: string }[] = [
-        { role: 'system', content: this.buildAgentSystemPrompt(strict, profile, env, taskMode, githubContext) },
+        {
+          role: 'system',
+          content: this.buildAgentSystemPrompt(
+            strict, profile, env, taskMode, githubContext, rootPath, userPrompt, ghCtx
+          ),
+        },
         { role: 'user',   content: baseUserMessage },
       ];
 
@@ -1060,7 +1518,8 @@ export class LocalAgent {
               ? `CORRECCIÓN ARQUITECTURA: ${archHint} ` +
                 `CREA ${profile.architecture.modulesToCreate.join(' y ')} con la lógica. ` +
                 `${profile.primaryEntry} solo registra/require — NO metas toda la funcionalidad ahí.`
-              : `CORRECCIÓN: ACCION con <<CONTENIDO>> completo (sin \`\`\`). Módulos separados si la tarea es grande.`;
+              : `CORRECCIÓN: ACCION con <<CONTENIDO>> completo y FUNCIONAL (sin \`\`\`). ` +
+                `Cada comando/feature con lógica real — sin TODO ni funciones vacías.`;
         messages.push({ role: 'user', content: retryHint });
       } else if (attempt === 2) {
         const sshPrefix = this.formatSshInvoke(env);
@@ -1070,11 +1529,7 @@ export class LocalAgent {
               `ACCION: CREAR | RUTA: ${m} | MOTIVO: módulo\n<<CONTENIDO>>\n(module.exports…)\n<<FIN>>\n`
             ).join('\n') + '\n'
           : '';
-        const folderBlock = arch?.folders.length
-          ? arch.folders.map((f) =>
-              `ACCION: CREAR | RUTA: ${f}/.gitkeep | MOTIVO: carpeta\n<<CONTENIDO>>\n# ${f}\n<<FIN>>\n`
-            ).join('\n') + '\n'
-          : '';
+        const folderBlock = '';
         const template = taskMode === 'github'
           ? `EXPLICACION:\nPublicando en GitHub.\n\n` +
             `GITHUB: PUBLICAR | REPO: ${projectName} | PRIVADO: no | MOTIVO: publicar proyecto\n`
@@ -1116,11 +1571,27 @@ export class LocalAgent {
         ? this.architectureSatisfied(lastResult.actions, profile.architecture, profile.primaryEntry)
         : true;
 
-      if ((hasWork && moduleOk && foldersOk && archOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
+      const functional = scoreFunctionalQuality(lastResult.actions, userPrompt);
+      const functionalOk = functional.ok || !needsWork;
+
+      if ((hasWork && moduleOk && foldersOk && archOk && functionalOk) || !needsWork || (!refused && attempt === attempts.length - 1)) {
+        if (!functionalOk && attempt === attempts.length - 1) {
+          onProgress?.(`⚠️ Código con placeholders: ${functional.issues.slice(0, 2).join('; ')}`);
+        }
         return lastResult;
       }
 
-      if (!archOk) {
+      if (!functionalOk) {
+        onProgress?.(`🔄 Código no funcional (${functional.skeletonFiles.join(', ') || 'esqueleto'}) — reintentando con lógica real...`);
+        messages.push({
+          role: 'user',
+          content:
+            `CORRECCIÓN FUNCIONAL: el código anterior NO FUNCIONA.\n` +
+            `Problemas: ${functional.issues.join('; ')}\n` +
+            `Reescribe con lógica COMPLETA: cada comando/feature debe ejecutarse de verdad. ` +
+            `Sin TODO, sin "...", sin funciones vacías. Incluye handlers, respuestas y manejo de errores.`,
+        });
+      } else if (!archOk) {
         onProgress?.('🔄 Ollama metió todo en index.js — reintentando con arquitectura modular...');
       }
     }
@@ -1143,12 +1614,15 @@ export class LocalAgent {
     rootPath: string,
     projectName = 'proyecto'
   ): AgentResult {
-    const explanationMatch = raw.match(/EXPLICACI[OÓ]N:\s*([\s\S]*?)(?=ACCION:|COMANDO:|GITHUB:|$)/i);
+    const explanationMatch = raw.match(
+      /EXPLICACI[OÓ]N:\s*([\s\S]*?)(?=ACCION:|COMANDO:|GITHUB:|EXTENSION:|VSCODE:|SELF:|$)/i
+    );
     const explanation      = explanationMatch ? explanationMatch[1].trim() : raw.trim();
 
     const actions      = this.parseFileActions(raw);
     const commands     = this.parseCommandActions(raw);
     const githubTools  = this.parseGitHubToolActions(raw);
+    const vscodeActions = parseVscodeActions(raw);
 
     if (actions.length === 0) {
       actions.push(...this.parseMarkdownFileFallback(raw));
@@ -1159,15 +1633,21 @@ export class LocalAgent {
     }
 
     const sanitized = this.sanitizeFileActions(actions, userPrompt, entryPoints, rootPath);
-    const withFolders = this.injectFolderCreateActions(sanitized, userPrompt);
-    const withCommands = this.injectFolderCommands(commands, userPrompt);
+    const withFolders = this.injectFolderCreateActions(sanitized, userPrompt, rootPath);
+    const withCommands = this.injectBlueprintCommands(
+      this.injectFolderCommands(commands, userPrompt),
+      userPrompt,
+      entryPoints,
+      rootPath
+    );
     const withGitHub = this.injectGitHubToolActions(githubTools, userPrompt, projectName);
 
     return {
       explanation,
-      actions:     withFolders,
-      commands:    withCommands,
-      githubTools: withGitHub,
+      actions:       withFolders,
+      commands:      withCommands,
+      githubTools:   withGitHub,
+      vscodeActions,
     };
   }
 
@@ -1517,7 +1997,36 @@ export class LocalAgent {
     );
   }
 
-  /** Si el modelo no emitió mkdir, la extensión lo añade. */
+  /** Inyecta npm init / npm install cuando la plantilla lo requiere. */
+  private injectBlueprintCommands(
+    commands: CommandAction[],
+    userPrompt: string,
+    entryPoints: string[],
+    rootPath: string
+  ): CommandAction[] {
+    const primaryEntry = entryPoints[0]
+      ? path.relative(rootPath, entryPoints[0]).replace(/\\/g, '/')
+      : 'index.js';
+    const hasPkg = fs.existsSync(path.join(rootPath, 'package.json'));
+    const blueprint = detectBlueprint(
+      userPrompt,
+      this.readStackFromPackage(rootPath),
+      hasPkg,
+      entryPoints.length > 0,
+      primaryEntry
+    );
+    if (!blueprint?.commands.length) { return commands; }
+
+    const result = [...commands];
+    for (const { command, reason } of blueprint.commands) {
+      const exists = result.some((c) => c.command.trim() === command.trim());
+      if (!exists) {
+        result.unshift({ command, reason: `${reason} (auto Local Copilot)` });
+      }
+    }
+    return result;
+  }
+
   private injectFolderCommands(
     commands: CommandAction[],
     userPrompt: string
@@ -1610,6 +2119,13 @@ export class LocalAgent {
         continue;
       }
 
+      if (impl && action.content && isSkeletonOrPlaceholder(action.content)) {
+        this.outputChannel.appendLine(
+          `[SKIP] Esqueleto/placeholder sin lógica: "${filePath}"`
+        );
+        continue;
+      }
+
       if (!this.isValidCodeWritePath(filePath, userPrompt)) {
         const archModule = this.inferModulePathFromPrompt(userPrompt);
         if (impl && archModule && action.content && this.looksLikeSourceCode(action.content)) {
@@ -1647,13 +2163,14 @@ export class LocalAgent {
   }
 
   private looksLikeImplementationTask(prompt: string): boolean {
-    return /\b(crea|crear|arregla|arreglar|fix|corrige|publica|publicar|sube|subir|implementa|modifica|escribe|genera|deploy|commit|push|github|git|revisa|revisar|analiza|analizar|inspecciona|programa|programar|mejora|mejorar|refactoriza|refactorizar|añade|agrega|instala|configura|actualiza|chatbot|bot|api|endpoint|componente|funci[oó]n|carpeta|caperta|directorio|folder|multimedia)\b/i
+    return /\b(crea|crear|creame|créame|hazme|házmela|monta|montame|móntame|arregla|arreglar|arréglalo|fix|corrige|corregir|publica|publicar|sube|subir|implementa|implementar|modifica|modificar|escribe|genera|deploy|commit|push|github|git|revisa|revisar|analiza|analizar|inspecciona|programa|programar|mejora|mejorar|refactoriza|refactorizar|añade|agrega|instala|configura|actualiza|chatbot|bot|api|endpoint|componente|funci[oó]n|carpeta|caperta|directorio|folder|multimedia|p[aá]gina|web|sitio|html|discord|juego|game|landing|express|backend|npm|impresionante|flipante|brutal|de verdad|en serio|que funcione|hazlo bien|no a la ligera|plugin|mod\b|mods\b|addon|rom\b|minecraft|papermc|spigot|fabric|forge|lineage|aosp|extensi[oó]n)\b/i
       .test(prompt);
   }
 
   private wantsInfraFiles(userPrompt: string): boolean {
     return this.looksLikeRemoteTask(userPrompt) ||
-      /\b(nginx|apache|systemd|docker|compose|cron|firewall|ufw|\.sh|script|backup)\b/i.test(userPrompt);
+      /\b(nginx|apache|systemd|docker|compose|cron|firewall|ufw|\.sh|script|backup)\b/i.test(userPrompt) ||
+      /\b(rom\b|lineage|aosp|device\.mk|BoardConfig|papermc|plugin\.yml|fabric\.mod|mods\.toml)\b/i.test(userPrompt);
   }
 
   // ── Confirmación de acciones ───────────────────────────────────────────────
@@ -1678,6 +2195,7 @@ export class LocalAgent {
       result.actions.length > 0 ? `${result.actions.length} archivo(s)` : '',
       result.commands.length > 0 ? `${result.commands.length} comando(s)` : '',
       result.githubTools.length > 0 ? `${result.githubTools.length} acción(es) GitHub` : '',
+      result.vscodeActions.length > 0 ? `${result.vscodeActions.length} acción(es) VS Code` : '',
     ].filter(Boolean);
 
     const confirmMessage = `¿Permitir que el agente aplique ${parts.join(' y ')} al proyecto?`;
@@ -1774,6 +2292,14 @@ export class LocalAgent {
       // macOS
       'brew ', 'launchctl ',
     ];
+
+    if (isAgentIdeModeEnabled()) {
+      if (normalized.startsWith('code ') || normalized.startsWith('cursor ')) {
+        if (/code\s+--(install|uninstall|list)-extension/.test(normalized)) {
+          return true;
+        }
+      }
+    }
 
     return allowedPrefixes.some(prefix => normalized.startsWith(prefix));
   }

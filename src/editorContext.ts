@@ -45,7 +45,47 @@ export function resolveCodeEditor(): vscode.TextEditor | undefined {
     return lastCodeEditor;
   }
 
-  return vscode.window.visibleTextEditors.find(isCodeEditor);
+  const visible = vscode.window.visibleTextEditors.filter(isCodeEditor);
+  if (visible.length === 0) { return undefined; }
+  if (visible.length === 1) { return visible[0]; }
+
+  const withContent = visible
+    .filter((e) => e.document.getText().trim().length > 0)
+    .sort((a, b) => b.document.getText().length - a.document.getText().length);
+  return withContent[0] ?? visible[0];
+}
+
+/** El usuario pide diagnosticar o corregir algo que falla (modo Profesor). */
+export function wantsTeacherFix(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return /\b(falla|fallando|falla|error|errores|no funciona|no marcha|no va|roto|bug|bugs|corregir|corrige|corrije|arregla|arreglar|arreglame|fix|fixed|repara|reparar|est[aá]\s+mal|mal\s+esto|no compila|syntax|typeerror|referenceerror|excepci[oó]n|crash|depura|debug|debuggear|soluciona|solucionar|qu[eé]\s+est[aá]\s+mal|por\s+qu[eé]\s+falla|por\s+qu[eé]\s+no)\b/i
+    .test(t);
+}
+
+/** Errores y avisos del Problems panel para un archivo. */
+export function getDiagnosticsBlock(filePath: string): string {
+  if (!filePath) { return ''; }
+  try {
+    const uri = vscode.Uri.file(filePath);
+    const diags = vscode.languages.getDiagnostics(uri);
+    if (!diags.length) { return ''; }
+
+    return diags
+      .map((d) => {
+        const icon = d.severity === vscode.DiagnosticSeverity.Error
+          ? '❌ ERROR'
+          : d.severity === vscode.DiagnosticSeverity.Warning
+            ? '⚠️ AVISO'
+            : 'ℹ️ INFO';
+        const line = d.range.start.line + 1;
+        const col  = d.range.start.character + 1;
+        const code = d.code ? ` [${d.code}]` : '';
+        return `${icon} línea ${line}:${col}${code} — ${d.message}`;
+      })
+      .join('\n');
+  } catch {
+    return '';
+  }
 }
 
 /** Peticiones que requieren código del editor abierto (solo modo Chat). */
@@ -152,4 +192,21 @@ export function enrichMessageWithEditor(userText: string, force = false): Enrich
     'Analiza el bloque de código anterior.';
 
   return { text: enriched, attached: true, filePath: relPath, source: ctx.source };
+}
+
+/** Contexto completo del archivo abierto (para corrección del Profesor). */
+export function getEditorContextForFix(): EditorContext {
+  const editor = resolveCodeEditor();
+  if (!editor) {
+    return { code: '', filePath: '', language: 'text', source: 'none' };
+  }
+  const doc = editor.document;
+  const filePath = doc.uri.fsPath;
+  const full = doc.getText().trim();
+  return {
+    code: full.slice(0, MAX_EDITOR_CHARS),
+    filePath,
+    language: guessLanguage(filePath),
+    source: 'file',
+  };
 }

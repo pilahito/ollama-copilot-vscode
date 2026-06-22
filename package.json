@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot gratuito para VS Code: autocompletado, chat, agente que programa con Ollama, +Internet para investigar, e integración GitHub.",
-  "version": "1.0.35",
+  "version": "1.0.86",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -36,7 +36,11 @@
   },
   "categories": ["Programming Languages", "Machine Learning", "Other"],
   "icon": "media/icon.png",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:local.chatView",
+    "onView:local.dockView"
+  ],
   "main": "./dist/extension.js",
   "extensionDependencies": [
     "vscode.github-authentication"
@@ -50,6 +54,18 @@
         "category": "Local Copilot"
       },
       {
+        "command": "local.clearChat",
+        "title": "Local: Limpiar chat",
+        "icon": "$(clear-all)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.openDock",
+        "title": "Local: Abrir chat (barra izquierda)",
+        "icon": "$(flame)",
+        "category": "Local Copilot"
+      },
+      {
         "command": "local.fixError",
         "title": "Local: Arreglar este código"
       },
@@ -60,6 +76,24 @@
       {
         "command": "local.checkConnection",
         "title": "Local: Comprobar conexión con Ollama"
+      },
+      {
+        "command": "local.runSelfTest",
+        "title": "Local: Ejecutar autotest (chat, profesor, agente)",
+        "icon": "$(debug-start)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.debugVisual",
+        "title": "Local: Depuración visual (webview + captura)",
+        "icon": "$(refresh)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.godMode",
+        "title": "Local: Modo dios (prueba todo hasta OK)",
+        "icon": "$(pass-filled)",
+        "category": "Local Copilot"
       },
       {
         "command": "local.toggleInlineSuggestions",
@@ -80,6 +114,17 @@
       {
         "command": "local.selectModel",
         "title": "Local: Elegir modelo de IA (de los detectados)"
+      },
+      {
+        "command": "local.supportDonate",
+        "title": "Local: Apoyar con PayPal",
+        "icon": "$(heart)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.openProviderSite",
+        "title": "Local: Abrir sitio del proveedor IA",
+        "category": "Local Copilot"
       },
       {
         "command": "local.githubLogin",
@@ -127,9 +172,14 @@
       ],
       "commandPalette": [
         { "command": "local.openChat" },
+        { "command": "local.clearChat" },
+        { "command": "local.openDock" },
         { "command": "local.fixError", "when": "editorHasSelection" },
         { "command": "local.explainCode", "when": "editorHasSelection" },
         { "command": "local.checkConnection" },
+        { "command": "local.runSelfTest" },
+        { "command": "local.debugVisual" },
+        { "command": "local.godMode" },
         { "command": "local.toggleInlineSuggestions" },
         { "command": "local.githubLogin" },
         { "command": "local.githubLogout" },
@@ -139,7 +189,9 @@
         { "command": "local.analyzeProject" },
         { "command": "local.openAutoTerminal" },
         { "command": "local.useInternetProvider" },
-        { "command": "local.selectModel" }
+        { "command": "local.selectModel" },
+        { "command": "local.supportDonate" },
+        { "command": "local.openProviderSite" }
       ]
     },
     "viewsContainers": {
@@ -147,14 +199,14 @@
         {
           "id": "localcopilot",
           "title": "Local Copilot",
-          "icon": "media/icon.png"
+          "icon": "media/activitybar.png"
         }
       ],
       "secondarySidebar": [
         {
           "id": "localcopilot-chat",
           "title": "Local Copilot",
-          "icon": "media/icon.png"
+          "icon": "media/activitybar.png"
         }
       ]
     },
@@ -163,8 +215,7 @@
         {
           "type": "webview",
           "id": "local.dockView",
-          "name": "Local Copilot",
-          "icon": "media/icon.png"
+          "name": "Local Copilot"
         }
       ],
       "localcopilot-chat": [
@@ -172,7 +223,7 @@
           "type": "webview",
           "id": "local.chatView",
           "name": "Chat IA",
-          "icon": "media/icon.png"
+          "icon": "media/activitybar.png"
         }
       ]
     },
@@ -181,11 +232,10 @@
       "properties": {
         "local.provider": {
           "type": "string",
-          "enum": ["auto", "ollama", "duckduckgo", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
+          "enum": ["auto", "ollama", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
           "enumDescriptions": [
-            "Auto - Ollama si está instalado, si no DuckDuckGo en tu navegador",
+            "Auto - Ollama si está instalado, si no la primera API configurada en ⚙️",
             "Ollama - IA local (gratis, sin internet)",
-            "DuckDuckGo AI - GRATIS sin API key (usa GPT-4o-mini)",
             "Gemini - Google AI (gratis con límites)",
             "OpenRouter - Múltiples modelos (de pago)",
             "Groq - Ultra rápido (gratis con API key)",
@@ -205,7 +255,7 @@
         "local.useInternet": {
           "type": "boolean",
           "default": false,
-          "description": "Si está activado, la extensión prioriza proveedores remotos con internet. El modo Auto lo gestiona solo."
+          "description": "Permite búsqueda web con Ollama cuando la pregunta lo necesita (docs, noticias, tutoriales). No busca en cada mensaje."
         },
         "local.ollamaUrl": {
           "type": "string",
@@ -221,6 +271,11 @@
           "type": "string",
           "default": "qwen2.5-coder:7b",
           "description": "Modelo usado para el autocompletado inline."
+        },
+        "local.agentModel": {
+          "type": "string",
+          "default": "",
+          "description": "Modelo para el modo Agente (vacío = auto según hardware y modelos instalados)."
         },
         "local.inlineSuggestionsEnabled": {
           "type": "boolean",
@@ -241,6 +296,21 @@
           "type": "boolean",
           "default": true,
           "description": "Permite que el modo agente ejecute comandos de terminal (git, gh, npm, etc.)."
+        },
+        "local.agentAutoCommitPush": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tras modificar archivos, el agente hace commit y push automático a tu repositorio Git (si hay origin)."
+        },
+        "local.agentIdeMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Agente IDE: instalar/desinstalar extensiones VS Code, ejecutar comandos del IDE y listar extensiones."
+        },
+        "local.agentSelfModify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Permite al agente modificar el código de Local Copilot y recompilar/instalar la extensión (solo en el repo ollama-copilot-vscode)."
         },
         "local.enableAutomation": {
           "type": "boolean",
@@ -366,6 +436,35 @@
           "type": "boolean",
           "default": true,
           "description": "Precalienta el modelo al abrir el chat (menos espera en el primer mensaje)."
+        },
+        "local.paypalDonateUrl": {
+          "type": "string",
+          "default": "https://www.paypal.com/paypalme/pilahito",
+          "description": "Enlace PayPal para donaciones y apoyo al desarrollo de Local Copilot."
+        },
+        "local.promptChat": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Prompt del sistema para modo Chat (vacío = predeterminado)."
+        },
+        "local.promptTeacher": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Prompt del sistema para modo Profesor (vacío = predeterminado)."
+        },
+        "local.promptTeacherFix": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Prompt para Profesor al corregir errores en el editor (vacío = predeterminado)."
+        },
+        "local.promptAgent": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Instrucciones extra para el Agente (se añaden al prompt del sistema)."
         }
       }
     }

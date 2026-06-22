@@ -1,5 +1,135 @@
 # Changelog
 
+## [1.0.86] - 2026-06-23
+
+### Added
+- **ReferenceLearner**: investiga proyectos similares en GitHub con +Internet y guarda patrones en `~/.local-copilot/learned-references.json`
+- Modo **sin internet**: reutiliza caché aprendida + plantillas locales (Discord, Minecraft, ROM, extensión VS Code)
+- **Chat y Profesor** también usan referencias aprendidas (antes solo el Agente)
+- Detección de **features** (música, trivia, economía, clima, radio, Telegram…) para mejor matching de caché
+- Consultas `site:github.com` priorizadas; repos GitHub van primero en resultados
+- Módulos: `userIntent`, `apiGuidance`, `githubGuidance`, `codeQuality`, `projectBlueprints`
+- Reintento automático si el modelo genera esqueletos/TODO en lugar de código funcional
+- Scripts de prueba: `test-reference-learner.mjs`, `test-reference-integration.ts`, `test-bot-intent.mjs`
+
+### Changed
+- Agente: flujo unificado `resolveReferences` (online/offline/combinado)
+- `searchWebMulti` ordena hits con `prioritizeGitHubHits`
+- Patrones GitHub siempre incluidos en los 14 patrones guardados
+
+### Fixed
+- Caché offline combina aprendizaje previo + blueprint + builtin en un solo contexto
+
+## [1.0.46] - 2026-06-22
+
+### Fixed
+- **Modelos Ollama no cargaban** al abrir el chat (el webview pedía la lista al estar listo)
+- Reintento automático de conexión Ollama si la primera falla
+- **PayPal** en el header abre el enlace correctamente (clic fijo en el botón)
+- Eliminado icono **🎯** (diana) del header del chat
+
+## [1.0.45] - 2026-06-22
+
+### Changed
+- **Dock izquierdo** simplificado: solo botón **Abrir chat** (sin PayPal)
+- Logo con **icon.svg** + fallback de chip IA si la imagen no carga
+
+## [1.0.44] - 2026-06-22
+
+### Fixed
+- **Icono izquierdo abre el chat a la derecha al instante** (sin pedir un segundo clic)
+- Barra lateral derecha se muestra automáticamente (`auxiliaryBar.show`)
+- Reintentos al enfocar `local.chatView` si el panel tarda en cargar
+
+## [1.0.43] - 2026-06-22
+
+### Added
+- **Profesor corrige errores**: si dices que algo falla, diagnostica y escribe el fix en tu archivo
+- Lee errores del panel **Problems** (linter/compilador) automáticamente
+- Puede ejecutar `npm install` si el fallo es una dependencia faltante
+
+### Changed
+- Modo Profesor: enseñanza normal sin tocar archivos; corrección solo con "falla", "error", "corrige", etc.
+
+## [1.0.42] - 2026-06-22
+
+### Added
+- **Agente con plantillas inteligentes**: página web, bot Discord, juego web, API REST
+- Auto `npm init` + `npm install discord.js` / `express` cuando hace falta
+- Creación **por orden**: carpetas → módulos → index.js al final
+- **Profesor** mejorado: explica arquitectura, pasos, errores típicos y siguiente paso
+
+### Changed
+- Modo Agente detecta "creame una página web", "bot discord", "juego", etc.
+- Un archivo por comando (`commands/ping.js`) — sentido común de programador senior
+- HTML/CSS/JS en `public/` separados (no todo inline)
+
+## [1.0.41] - 2026-06-22
+
+### Added
+- **Detección instantánea de IA** al abrir el chat (bootstrap desde caché, sin lag)
+- **Router por tarea**: elige automáticamente el mejor modelo para Chat, Autocompletado y Agente
+- **Perfil de hardware** (RAM, CPU, GPU NVIDIA, SO) con recomendaciones reales en el modal 🎯
+- Botón **🎯** siempre visible en el header del chat
+- Banner **sin modelos IA** con enlace a recomendaciones
+- Setting `local.agentModel` para el modo Agente
+- Notificación única si no hay modelos al activar VS Code
+
+### Changed
+- Prefetch de Ollama al arrancar la extensión (modelos en segundo plano)
+- Caché de conexión 10s y lista de modelos 120s (menos peticiones = menos lag)
+- Polling de barra de estado cada 60s (antes 30s)
+- Warmup del modelo diferido 5s para no bloquear la UI
+
+## [1.0.40] - 2026-06-22
+
+### Changed
+- Logo **diablo.jpg** restaurado en dock, chat, avatares y barra de actividad
+- `icon.png` / `icon.svg` regenerados desde el diablo para el marketplace y VS Code
+
+## [1.0.39] - 2026-06-22
+
+### Fixed
+- **Icono izquierdo → chat derecha** como GitHub Copilot: al pulsar el icono se abre el panel derecho automáticamente
+- Si la barra lateral secundaria está oculta (`secondarySideBar.defaultVisibility: hidden`), se muestra al abrir el chat
+- Explorador de archivos a la izquierda + chat enfocado a la derecha
+- `reveal()` en el chat con reintentos para que el webview cargue siempre
+
+## [1.0.38] - 2026-06-22
+
+### Added
+- **Botón PayPal** (icono oficial) en el header del chat — sustituye la flecha ↗️
+- Enlace **Apoyar** en el pie del chat y en el dock izquierdo → `https://paypal.me/pilahito`
+- Comando **Local: Apoyar con PayPal** y setting `local.paypalDonateUrl`
+- Comando **Local: Abrir sitio del proveedor IA** (antes en la flecha)
+
+### Changed
+- Modo **experto multilenguaje** en Chat, Profesor, Agente y autocompletado inline
+- Prompts centralizados en `src/prompts.ts` (30+ lenguajes y frameworks)
+- Modelfile `local-copilot-turbo` actualizado con personalidad experta
+
+## [1.0.37] - 2026-06-22
+
+### Fixed
+- **+Internet ya no busca en cada mensaje** — solo cuando la pregunta lo pide (docs, noticias, tutoriales…)
+- **Agente comprueba Ollama/API** antes de escanear el proyecto (error claro si no hay conexión)
+- **Profesor** adjunta código del editor cuando pides explicar/analizar código
+- **Dock izquierdo** ya no abre el chat solo por hacer clic en el icono (solo con «Abrir chat →»)
+- **Botón enviar** se desbloquea tras errores; watchdog de 5 min si Ollama cuelga
+- Timeouts Ollama más generosos (5s lectura, 30s generación)
+- `local-copilot-turbo` sin `:latest` ya no se pierde al auto-detectar modelos
+- Canal de salida **Local Copilot** para depurar fallos (`Ver → Salida`)
+
+## [1.0.36] - 2026-06-22
+
+### Fixed
+- **Icono del dock izquierdo** visible de nuevo (SVG monocromo en barra de actividad)
+- Panel del dock con botón «Abrir chat» en lugar de vista vacía
+- **Selector Ollama** siempre actualiza la lista; coincide `local-copilot-turbo` con `:latest`
+- Sugerencias del welcome ya no dejan el chat bloqueado (`isSending`)
+- Errores de streaming liberan el botón enviar (`responseEnd` en catch)
+- Comando **Local: Mostrar icono en barra lateral** (`local.openDock`)
+
 ## [1.0.35] - 2026-06-22
 
 ### Fixed

@@ -23,6 +23,7 @@
 
 import * as vscode from 'vscode';
 import { OllamaClient } from './ollamaClient';
+import { INLINE_COMPLETION_HINT } from './prompts';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -96,7 +97,9 @@ export class LocalInlineCompletionProvider implements vscode.InlineCompletionIte
       )
     );
 
-    const prompt = this.buildFimPrompt(textBefore, textAfter);
+    const lang = document.languageId || 'plaintext';
+    const fileName = document.fileName.split(/[/\\]/).pop() ?? 'file';
+    const prompt = this.buildFimPrompt(textBefore, textAfter, lang, fileName);
 
     try {
       const completion = await this.ollama.generateCompletion(prompt);
@@ -126,8 +129,9 @@ export class LocalInlineCompletionProvider implements vscode.InlineCompletionIte
    * Construye un prompt FIM (Fill-In-the-Middle) usando los tokens nativos
    * de Qwen2.5-Coder, forzando al modelo a rellenar únicamente el hueco central.
    */
-  private buildFimPrompt(before: string, after: string): string {
-    return `${FIM_PREFIX}${before}${FIM_SUFFIX}${after}${FIM_MIDDLE}`;
+  private buildFimPrompt(before: string, after: string, languageId: string, fileName: string): string {
+    const header = `// Archivo: ${fileName} | Lenguaje: ${languageId}\n// ${INLINE_COMPLETION_HINT}\n`;
+    return `${FIM_PREFIX}${header}${before}${FIM_SUFFIX}${after}${FIM_MIDDLE}`;
   }
 
   /**

@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=pilahito.local-copilot">VS Marketplace</a> •
   <a href="https://github.com/pilahito/ollama-copilot-vscode/releases/latest">Última release</a> •
   <a href="#instalación">Instalación</a> •
   <a href="#modo-agente">Agente</a> •
@@ -14,6 +15,10 @@
 </p>
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=pilahito.local-copilot">
+    <img src="https://img.shields.io/visual-studio-marketplace/v/pilahito.local-copilot?label=Marketplace" alt="Marketplace">
+  </a>
+  <img src="https://img.shields.io/github/v/release/pilahito/ollama-copilot-vscode?label=versión" alt="versión">
   <img src="https://img.shields.io/badge/licencia-MIT-blue" alt="MIT">
   <img src="https://img.shields.io/badge/VS%20Code-%5E1.85-007ACC" alt="VS Code">
   <img src="https://img.shields.io/badge/Ollama-compatible-green" alt="Ollama">
@@ -53,7 +58,12 @@ Todo corre en tu máquina con **Ollama**, o puedes activar **+Internet** para bu
 
 ## Instalación
 
-### Opción A — Release (recomendado)
+### Opción A — VS Marketplace (recomendado)
+
+1. En VS Code: **Extensiones** → busca **Local Copilot** (publisher `pilahito`).
+2. **Instalar** desde [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=pilahito.local-copilot).
+
+### Opción B — Release (.vsix)
 
 1. Descarga el `.vsix` de la [última release](https://github.com/pilahito/ollama-copilot-vscode/releases/latest).
 2. En VS Code: **Extensiones** → menú `⋯` → **Instalar desde VSIX…**
@@ -65,7 +75,7 @@ gh release download --repo pilahito/ollama-copilot-vscode --pattern "*.vsix"
 code --install-extension local-copilot-*.vsix --force
 ```
 
-### Opción B — Compilar desde código
+### Opción C — Compilar desde código
 
 ```bash
 git clone https://github.com/pilahito/ollama-copilot-vscode.git
@@ -151,6 +161,16 @@ El agente muestra:
 
 La búsqueda usa DuckDuckGo (gratis, sin API key). Para IAs en la nube (Groq, Gemini, etc.) configura las API keys en ⚙️.
 
+### Aprendizaje de referencias (v1.0.86+)
+
+Con +Internet, el Agente, Chat y Profesor **investigan cómo están hechos proyectos similares** en GitHub y guardan patrones en:
+
+```
+~/.local-copilot/learned-references.json
+```
+
+Sin internet, reutilizan esa caché + plantillas locales (bots Discord, plugins Paper, mods Fabric/Forge, ROM Android, extensiones VS Code).
+
 ---
 
 ## Proveedores de IA
@@ -176,7 +196,13 @@ La búsqueda usa DuckDuckGo (gratis, sin API key). Para IAs en la nube (Groq, Ge
 
 Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 
-> Al hacer commit en VS Code escribe un **mensaje** en el cuadro de Control de código fuente antes de confirmar.
+### Recomendaciones, variantes y tu repositorio
+
+- **Aceptamos recomendaciones** y **variantes** (forks, temas, configs) bajo licencia MIT — ver [CONTRIBUTING.md](CONTRIBUTING.md).
+- Si el **Agente modifica archivos**, con `local.agentAutoCommitPush` (activo por defecto) hace **commit y push** a tu `origin` automáticamente.
+- Para integrar cambios en el repo oficial: abre un **Pull Request** tras el push.
+
+> Al hacer commit manual en VS Code escribe un **mensaje** en el cuadro de Control de código fuente antes de confirmar.
 
 ---
 
@@ -205,6 +231,7 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 | `local.completionModel` | Modelo autocompletado | `qwen2.5-coder:7b` |
 | `local.requireConfirmation` | Pedir OK antes de escribir archivos | `false` |
 | `local.agentRunTerminal` | Agente ejecuta `git`, `npm`, `gh` | `true` |
+| `local.agentAutoCommitPush` | Tras editar archivos, commit+push a tu repo | `true` |
 | `local.ollamaUrl` | URL de Ollama | `http://localhost:11434` |
 
 ---
@@ -213,6 +240,8 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| **1.0.86** | ReferenceLearner: GitHub, caché offline, Chat/Profesor/Agente |
+| **1.0.80+** | Intención usuario, APIs, GitHub sentido común, calidad de código |
 | **1.0.12** | Agente +Internet investiga la web y luego programa |
 | **1.0.11** | Anti-refusal, reintento automático, Ollama optimizado para agente |
 | **1.0.10** | Icono en dock, chat en panel derecho |
@@ -252,6 +281,7 @@ MIT © 2026 [DavidPilahito7](https://github.com/pilahito)
 ---
 
 <p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=pilahito.local-copilot">📦 VS Marketplace</a> ·
   <a href="https://github.com/pilahito/ollama-copilot-vscode">⭐ Star en GitHub</a> ·
   <a href="https://github.com/pilahito/ollama-copilot-vscode/issues">Reportar bug</a>
 </p>

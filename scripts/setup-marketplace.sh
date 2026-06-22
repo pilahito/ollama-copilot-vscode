@@ -59,16 +59,20 @@ echo "  4. Name: Local Copilot (o tu nombre de marca)"
 echo "  5. Create"
 open_url "https://marketplace.visualstudio.com/manage"
 
-echo ""
-warn "Completa los pasos 1-3 en el navegador antes de continuar."
-echo ""
-read -rp "¿Ya creaste el PAT y el publisher '${PUBLISHER}'? [s/N]: " ready
-if [[ ! "$ready" =~ ^[sS]$ ]]; then
-  echo "Vuelve a ejecutar este script cuando termines los pasos del navegador."
-  exit 0
+if [[ -z "${VSCE_PAT:-}" ]]; then
+  echo ""
+  warn "Completa los pasos 1-3 en el navegador antes de continuar."
+  echo ""
+  if [[ "${AUTO_SETUP:-}" != "1" ]]; then
+    read -rp "¿Ya creaste el PAT y el publisher '${PUBLISHER}'? [s/N]: " ready
+    if [[ ! "$ready" =~ ^[sS]$ ]]; then
+      echo "Vuelve a ejecutar: VSCE_PAT='tu-token' ./scripts/setup-marketplace.sh"
+      exit 0
+    fi
+  fi
 fi
 
-paso "PASO 4 — Pegar el PAT"
+paso "PASO 4 — Personal Access Token"
 if [[ -z "${VSCE_PAT:-}" ]]; then
   read -rsp "Pega tu Personal Access Token: " VSCE_PAT
   echo ""

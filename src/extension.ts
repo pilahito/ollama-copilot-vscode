@@ -25,45 +25,50 @@ import * as vscode from 'vscode';
 import { OllamaClient }                    from './ollamaClient';
 import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
 import { LocalChatViewProvider }          from './chatViewProvider';
-import { LocalDockViewProvider }          from './dockViewProvider';
+
 import { GitHubService }                   from './githubService';
 import { initEditorContextTracking }       from './editorContext';
+import { openCopilotChat, onActivityBarIconClick } from './copilotLayout';
+import { LocalDockViewProvider } from './dockViewProvider';
+import { runSelfTest, ExtensionMonitor } from './selfTest';
+import { initDebugLog } from './debugLog';
+import { runVisualDebug } from './visualDebug';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 /** Intervalo de redetección de Ollama en segundo plano (ms). */
-const POLLING_INTERVAL_MS = 30_000;
+const POLLING_INTERVAL_MS = 60_000;
 
 /** Modelo recomendado si el usuario no tiene ninguno descargado. */
 const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 
-/** Abre el chat en la barra lateral derecha. */
-async function openLocalChat(): Promise<void> {
-  await vscode.commands.executeCommand('workbench.action.focusAuxiliaryBar');
-  await vscode.commands.executeCommand('workbench.view.extension.localcopilot-chat');
-}
-
-/** Icono del dock: chat a la derecha, archivos siguen a la izquierda. */
-async function onDockIconActivated(): Promise<void> {
-  await openLocalChat();
-  await vscode.commands.executeCommand('workbench.view.explorer');
-}
+const outputChannel = vscode.window.createOutputChannel('Local Copilot');
 
 // ── Activación ────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(outputChannel);
+  try {
+    activateExtension(context);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    outputChannel.appendLine(`[activate] FATAL: ${msg}`);
+    vscode.window.showErrorMessage(`Local Copilot no pudo iniciar: ${msg}`);
+  }
+}
+
+function activateExtension(context: vscode.ExtensionContext): void {
   initEditorContextTracking(context);
 
   const ollama        = new OllamaClient();
   const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
 
-  // Migrar configuración antigua (duckduckgo ya no aparece en el selector)
+  // Si tenía DuckDuckGo como "IA", migrar a Auto (es navegador, no IA integrada)
   void (async () => {
     const config = vscode.workspace.getConfiguration('local');
     if (config.get<string>('provider') === 'duckduckgo') {
       await config.update('provider', 'auto', vscode.ConfigurationTarget.Global);
-      await config.update('useInternet', true, vscode.ConfigurationTarget.Global);
       ollama.refreshConfig();
     }
   })();
@@ -73,13 +78,14 @@ export function activate(context: vscode.ExtensionContext): void {
   async function refreshStatusBar(): Promise<void> {
     const status = await ollama.checkConnection();
     const config = vscode.workspace.getConfiguration('local');
-    const currComp = config.get<string>('completionModel', '');
-    const currChat = config.get<string>('chatModel', '');
+    const currComp  = config.get<string>('completionModel', '');
+    const currChat  = config.get<string>('chatModel', '');
+    const currAgent = config.get<string>('agentModel', '') || currChat;
 
     if (status.ok) {
       const modelList = status.models.length > 0 ? status.models.join(', ') : 'ninguno descargado';
       statusBarItem.text              = `$(check) Local Copilot`;
-      statusBarItem.tooltip           = `IA local activa.\nModelos: ${modelList}\n\nAutocompletado: ${currComp || 'no seleccionado'}\nChat: ${currChat || 'no seleccionado'}\n\nClic: ver modelos\nComando: Local: Elegir modelo de IA`;
+      statusBarItem.tooltip           = `IA local activa.\nModelos: ${modelList}\n\nAutocompletado: ${currComp || 'auto'}\nChat: ${currChat || 'auto'}\nAgente: ${currAgent || 'auto'}\n\nClic: ver modelos\nComando: Local: Elegir modelo de IA`;
       statusBarItem.backgroundColor   = undefined;
       statusBarItem.command = 'local.checkConnection';
     } else {
@@ -92,31 +98,97 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBarItem.show();
   }
 
-  // Detecta Ollama al arrancar y repite cada POLLING_INTERVAL_MS por si
-  // el usuario lanza Ollama después de abrir VS Code.
   refreshStatusBar();
   const interval = setInterval(refreshStatusBar, POLLING_INTERVAL_MS);
-
-  // Auto: Ollama si hay modelos, si no DuckDuckGo en el navegador del usuario
-  ollama.resolveAutoProvider().then(() => {
-    return ollama.autoSelectBestModels();
-  }).then(() => {
-    void refreshStatusBar();
-  }).catch(() => {});
   context.subscriptions.push({ dispose: () => clearInterval(interval) });
-
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('local')) {
-        ollama.refreshConfig();
-        void refreshStatusBar();
-      }
-    })
-  );
 
   // ── Vista de chat lateral ───────────────────────────────────────────────────
 
-  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama, github);
+  const log = (line: string) => outputChannel.appendLine(line);
+  initDebugLog(log);
+  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama, github, log);
+  const monitor = new ExtensionMonitor(ollama, chatProvider, log);
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration('local')) { return; }
+      ollama.refreshConfig();
+      const needsInvalidate =
+        event.affectsConfiguration('local.ollamaUrl') ||
+        event.affectsConfiguration('local.provider') ||
+        event.affectsConfiguration('local.useInternet');
+      if (needsInvalidate) {
+        ollama.invalidateCaches();
+      }
+      void refreshStatusBar();
+      if (event.affectsConfiguration('local.chatModel') ||
+          event.affectsConfiguration('local.completionModel') ||
+          event.affectsConfiguration('local.agentModel')) {
+        chatProvider.pushModelsToUi();
+      }
+    })
+  );
+  let noModelsNotified = false;
+
+  const openLocalChat = async (): Promise<void> => {
+    try {
+      await openCopilotChat(chatProvider, log);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      outputChannel.appendLine(`[openChat] ${msg}`);
+      vscode.window.showWarningMessage(
+        'No se pudo abrir el chat a la derecha. Haz clic en el icono Local Copilot (izquierda) o activa Ver → Apariencia → Barra lateral secundaria.'
+      );
+    }
+  };
+
+  // Inicio silencioso: abrir chat, reintentar ping sin popup "Reintentar"
+  void ollama.prefetch().then(async () => {
+    await openLocalChat();
+    await refreshStatusBar();
+    chatProvider.pushModelsToUi();
+
+    const snap = ollama.getBootstrapSnapshot();
+    if (snap.noModels && !noModelsNotified) {
+      noModelsNotified = true;
+      const hw = ollama.getHardwareProfile();
+      log(`[startup] Sin modelos — ollama pull qwen2.5-coder:7b (${hw.osLabel}, ${hw.ramGb}GB)`);
+    }
+
+    let healthy = false;
+    for (let attempt = 0; attempt < 8 && !healthy; attempt++) {
+      await openLocalChat();
+      const ready = await chatProvider.waitUntilReady(15_000);
+      if (!ready) {
+        log(`[startup] Webview esperando… (${attempt + 1}/8)`);
+        await new Promise<void>((r) => setTimeout(r, 2_500));
+        continue;
+      }
+      const pingOk = await chatProvider.testWebviewPing(12_000);
+      if (pingOk) {
+        await chatProvider.forceSyncModels();
+        healthy = true;
+        log('[startup] ✓ Chat listo (ping OK, modelos cargados)');
+        await context.globalState.update('localCopilotLastHealthy', Date.now());
+      } else {
+        log(`[startup] Ping reintento ${attempt + 1}/8…`);
+        await new Promise<void>((r) => setTimeout(r, 3_000));
+      }
+    }
+
+    if (!healthy) {
+      log('[startup] Monitor silencioso (sin botón Reintentar)…');
+      await monitor.runUntilHealthy({ maxAttempts: 4, intervalMs: 10_000, silent: true });
+    }
+  }).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`[monitor] Error: ${msg}`);
+  });
+
+  context.subscriptions.push({ dispose: () => monitor.stop() });
+
+  const onDockActivated = () => onActivityBarIconClick(chatProvider, log);
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       LocalChatViewProvider.viewType,
@@ -125,7 +197,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.window.registerWebviewViewProvider(
       LocalDockViewProvider.viewType,
-      new LocalDockViewProvider(onDockIconActivated)
+      new LocalDockViewProvider(context.extensionUri, onDockActivated)
     )
   );
 
@@ -143,6 +215,84 @@ export function activate(context: vscode.ExtensionContext): void {
     // Abre el panel de chat en la barra lateral.
     vscode.commands.registerCommand('local.openChat', () => {
       void openLocalChat();
+    }),
+
+    vscode.commands.registerCommand('local.clearChat', () => {
+      void openLocalChat();
+      chatProvider.clearChat();
+    }),
+
+    vscode.commands.registerCommand('local.openDock', () => {
+      void openLocalChat();
+    }),
+
+    vscode.commands.registerCommand('local.supportDonate', async () => {
+      const url = vscode.workspace
+        .getConfiguration('local')
+        .get<string>('paypalDonateUrl', 'https://www.paypal.com/paypalme/pilahito');
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+      vscode.window.showInformationMessage(
+        '¡Gracias por apoyar Local Copilot! Tu donación ayuda a seguir mejorando la extensión. 💙'
+      );
+    }),
+
+    vscode.commands.registerCommand('local.openProviderSite', async () => {
+      await ollama.resolveAutoProvider();
+      const url = ollama.getBrowserChatUrl();
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    }),
+
+    // Depuración visual: ping webview, pipeline UI, captura de pantalla
+    vscode.commands.registerCommand('local.debugVisual', async () => {
+      outputChannel.show(true);
+      log('[visual] Depuración visual iniciada…');
+      await runVisualDebug(ollama, chatProvider, log);
+    }),
+
+    // Modo dios: depuración visual completa (chat + profesor + agente + usuario)
+    vscode.commands.registerCommand('local.godMode', async () => {
+      outputChannel.show(true);
+      log('[god] Modo dios iniciado…');
+      let attempt = 0;
+      let result = await runVisualDebug(ollama, chatProvider, log, { silent: true });
+      while (!result.ok && attempt < 4) {
+        attempt++;
+        log(`[god] Reintento automático ${attempt}/4…`);
+        await chatProvider.forceSyncModels();
+        await openLocalChat();
+        await new Promise<void>((r) => setTimeout(r, 8_000));
+        result = await runVisualDebug(ollama, chatProvider, log, { silent: true });
+      }
+      if (result.ok) {
+        vscode.window.showInformationMessage(
+          `🔥 Modo dios OK — ${result.passed} pruebas.`
+        );
+      } else {
+        log('[god] Fallos tras reintentos — ver salida Local Copilot');
+        outputChannel.show(true);
+      }
+    }),
+
+    // Autotest completo: Ollama, webview, chat, profesor y agente
+    vscode.commands.registerCommand('local.runSelfTest', async () => {
+      outputChannel.show(true);
+      log('[selfTest] Ejecutando…');
+      let result = await runSelfTest(ollama, chatProvider, log);
+      for (let i = 0; i < 3 && !result.ok; i++) {
+        log(`[selfTest] Reintento automático ${i + 1}/3…`);
+        await openLocalChat();
+        await chatProvider.forceSyncModels();
+        await new Promise<void>((r) => setTimeout(r, 5_000));
+        result = await runSelfTest(ollama, chatProvider, log);
+      }
+      if (result.ok) {
+        vscode.window.showInformationMessage(
+          `✓ Autotest OK — ${result.passed} pruebas.`
+        );
+      } else {
+        log(`[selfTest] ${result.failed} fallo(s) tras reintentos — ver salida`);
+        outputChannel.show(true);
+      }
     }),
 
     // Comprueba la conexión manualmente y muestra una notificación con el resultado.
@@ -183,8 +333,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Explica el código del editor (selección o archivo visible).
     vscode.commands.registerCommand('local.explainCode', async () => {
-      void openLocalChat();
-      chatProvider.sendExternalPrompt('Explica qué hace este código', 'chat');
+      await chatProvider.explainFromEditor();
     }),
 
     // Envía el código del editor al agente para que lo corrija directamente.
@@ -355,7 +504,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   );
 
-  vscode.window.setStatusBarMessage('Local Copilot activado — detectando IA local...', 3000);
+  vscode.window.setStatusBarMessage('Local Copilot activado — autotest en curso…', 4000);
+  outputChannel.appendLine('Local Copilot activado. Autotest automático al detectar Ollama.');
+  outputChannel.show(true);
 }
 
 export function deactivate(): void {}
