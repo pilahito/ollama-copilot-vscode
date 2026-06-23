@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — IA Local",
   "description": "Copilot gratuito para VS Code: autocompletado, chat, agente que programa con Ollama, +Internet para investigar, e integración GitHub.",
-  "version": "1.0.36",
+  "version": "1.0.37",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -67,11 +67,23 @@
       },
       {
         "command": "local.fixError",
-        "title": "Local: Arreglar este código"
+        "title": "Local: Arreglar este código",
+        "icon": "$(wrench)"
       },
       {
         "command": "local.explainCode",
-        "title": "Local: Explicar este código"
+        "title": "Local: Explicar este código",
+        "icon": "$(book)"
+      },
+      {
+        "command": "local.generateCode",
+        "title": "Local: Generar código",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "local.refactorCode",
+        "title": "Local: Refactorizar código",
+        "icon": "$(symbol-method)"
       },
       {
         "command": "local.checkConnection",
@@ -160,22 +172,34 @@
       ],
       "editor/context": [
         {
-          "command": "local.fixError",
+          "command": "local.explainCode",
           "group": "local@1",
-          "when": "editorHasSelection"
+          "when": "editorTextFocus"
         },
         {
-          "command": "local.explainCode",
+          "command": "local.generateCode",
           "group": "local@2",
-          "when": "editorHasSelection"
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.fixError",
+          "group": "local@3",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.refactorCode",
+          "group": "local@4",
+          "when": "editorTextFocus"
         }
       ],
       "commandPalette": [
         { "command": "local.openChat" },
         { "command": "local.clearChat" },
         { "command": "local.openDock" },
-        { "command": "local.fixError", "when": "editorHasSelection" },
-        { "command": "local.explainCode", "when": "editorHasSelection" },
+        { "command": "local.explainCode", "when": "editorTextFocus" },
+        { "command": "local.generateCode", "when": "editorTextFocus" },
+        { "command": "local.fixError", "when": "editorTextFocus" },
+        { "command": "local.refactorCode", "when": "editorTextFocus" },
         { "command": "local.checkConnection" },
         { "command": "local.runSelfTest" },
         { "command": "local.debugVisual" },

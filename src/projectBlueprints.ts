@@ -6,7 +6,9 @@ export type ProjectKind =
   | 'discord-bot'
   | 'web-static'
   | 'web-game'
+  | 'web-fullstack'
   | 'api-rest'
+  | 'minecraft-server'
   | 'minecraft-plugin'
   | 'minecraft-mod-fabric'
   | 'minecraft-mod-forge'
@@ -72,6 +74,10 @@ export function inferFeatureModules(prompt: string, cmdBase = 'commands/'): Feat
     folders.push('multimedia');
     modules.push('multimedia/storage.js', `${cmdBase}multimedia.js`);
   }
+  if (/\b(moderacion|moderación|moderation|admin|ban|kick|warn)\b/i.test(prompt)) {
+    folders.push('admin');
+    modules.push('admin/moderation.js', `${cmdBase}ban.js`);
+  }
 
   return {
     folders: [...new Set(folders)],
@@ -95,9 +101,19 @@ export function wantsRestApi(prompt: string): boolean {
   return /\b(api\s+rest|rest\s+api|backend\s+express|servidor\s+express|crea(?:r|me)?\s+una\s+api|endpoints?\s+api)\b/i.test(prompt);
 }
 
+export function wantsMinecraftServer(prompt: string): boolean {
+  return /\b(servidor\s+(?:de\s+)?minecraft|minecraft\s+server|server\s+minecraft|paper\s+server|spigot\s+server|crea(?:r|me)?\s+(?:un\s+)?servidor\s+(?:de\s+)?minecraft|monta(?:r|me)?\s+(?:un\s+)?servidor\s+minecraft)\b/i.test(prompt) ||
+    (/\b(minecraft|mc|papermc|spigot|paper)\b/i.test(prompt) && /\b(servidor|server|hosting|world|plugins\/)\b/i.test(prompt) && !/\bplugin\s+(?:de\s+)?java|javaplugin|gradle\b/i.test(prompt));
+}
+
 export function wantsMinecraftPlugin(prompt: string): boolean {
-  return /\b(plugin\s+(?:de\s+)?minecraft|minecraft\s+plugin|papermc|paper\s*mc|spigot|bukkit|servidor\s+minecraft|plugin\s+para\s+(?:el\s+)?servidor)\b/i.test(prompt) ||
+  if (wantsMinecraftServer(prompt)) { return false; }
+  return /\b(plugin\s+(?:de\s+)?minecraft|minecraft\s+plugin|papermc|paper\s*mc|spigot|bukkit|plugin\s+para\s+(?:el\s+)?servidor)\b/i.test(prompt) ||
     (/\b(minecraft|mc)\b/i.test(prompt) && /\bplugin\b/i.test(prompt));
+}
+
+export function wantsWebFullStack(prompt: string): boolean {
+  return wantsWebPage(prompt) && /\b(base\s+de\s+datos|database|mysql|postgres|postgresql|mongodb|sqlite|prisma|backend|api|fullstack|full[\s-]?stack)\b/i.test(prompt);
 }
 
 export function wantsMinecraftModFabric(prompt: string): boolean {
@@ -165,6 +181,42 @@ export function detectBlueprint(
       hint:
         'OBLIGATORIO: CREAR package.json (engines.vscode, contributes) + src/extension.ts con registerCommand. ' +
         'COMANDO npm install. Usa @types/vscode. NO extension.js monolítico sin package.json.',
+    };
+  }
+
+  if (wantsMinecraftServer(userPrompt)) {
+    return {
+      kind: 'minecraft-server',
+      label: 'Servidor Minecraft (Paper/Spigot)',
+      folders: ['world', 'plugins', 'config', 'logs'],
+      modulesToCreate: [
+        'server.properties',
+        'eula.txt',
+        'start.sh',
+        'start.bat',
+        'plugins/README.md',
+        'config/README.md',
+        '.gitignore',
+        'README.md',
+      ],
+      filesToModify: [],
+      commands: [],
+      planSteps: [
+        '1. server.properties + eula.txt',
+        '2. Carpetas world/, plugins/, config/, logs/',
+        '3. start.sh con jar Paper y -Xmx',
+        '4. README: dónde va cada cosa (world=mundo, plugins=jar, config=yaml)',
+        '5. .gitignore excluye world/ y logs/',
+      ],
+      summary:
+        'Servidor Minecraft organizado: world/ (mundo), plugins/ (.jar Paper/Spigot), ' +
+        'config/ (YAML plugins), server.properties, start.sh. NO mezclar plugins dentro de world/.',
+      hint:
+        'OBLIGATORIO servidor MC: CREAR server.properties, eula.txt (eula=true), start.sh que ejecuta paper.jar. ' +
+        'CREAR carpetas world/, plugins/, config/, logs/ con README en cada una explicando su uso. ' +
+        'CREAR .gitignore con world/, logs/, *.jar si no versionan. ' +
+        'plugins/ recibe .jar — config/ recibe YAML de LuckPerms, Essentials, etc. ' +
+        'EXPLICACION: árbol de carpetas y cómo arrancar (bash start.sh).',
     };
   }
 
@@ -302,7 +354,7 @@ export function detectBlueprint(
       modules.push(`${cmdBase}${slug(cmdMatch[1])}.js`);
     }
 
-    const folders = ['commands', 'events', 'utils', 'data', ...features.folders];
+    const folders = ['commands', 'events', 'admin', 'utils', 'data', 'services', ...features.folders];
 
     const commands: BlueprintCommand[] = [];
     if (!hasPackageJson) {
@@ -341,6 +393,48 @@ export function detectBlueprint(
         'APIs externas en services/ (ej. services/triviaApi.js con fetch a Open Trivia DB, services/weatherApi.js). ' +
         'La lógica va DENTRO de la carpeta de la feature, NO toda en index.js. ' +
         'CREAR .env.example (DISCORD_TOKEN=) — nunca hardcodear secretos. Un módulo = una responsabilidad.',
+    };
+  }
+
+  if (wantsWebFullStack(userPrompt) && !wantsGame(userPrompt)) {
+    const folders = ['public', 'public/css', 'public/js', 'server', 'server/routes', 'server/controllers', 'database'];
+    const modules = [
+      'public/index.html',
+      'public/css/styles.css',
+      'public/js/main.js',
+      'server/index.js',
+      'server/routes/index.js',
+      'server/controllers/healthController.js',
+      'database/schema.sql',
+      '.env.example',
+    ];
+    const commands: BlueprintCommand[] = [];
+    if (!hasPackageJson) {
+      commands.push({ command: 'npm init -y', reason: 'Proyecto fullstack' });
+    }
+    commands.push({ command: 'npm install express cors dotenv', reason: 'API + CORS + env' });
+
+    return {
+      kind: 'web-fullstack',
+      label: 'Web fullstack (front + API + base de datos)',
+      folders,
+      modulesToCreate: modules,
+      filesToModify: [],
+      commands,
+      planSteps: [
+        '1. public/ — HTML, CSS, JS del frontend',
+        '2. server/ — Express API (routes + controllers)',
+        '3. database/ — schema.sql o Prisma',
+        '4. .env.example con DATABASE_URL',
+        '5. server/index.js solo listen + montar rutas',
+      ],
+      summary:
+        'Fullstack: public/ (frontend) + server/ (API) + database/ (esquema). ' +
+        'Separar presentación, lógica de negocio y datos.',
+      hint:
+        'OBLIGATORIO fullstack: public/index.html + css + js SEPARADOS. ' +
+        'server/routes/ + server/controllers/ + database/schema.sql. ' +
+        'COMANDO npm install express cors dotenv. .env.example con DATABASE_URL.',
     };
   }
 
@@ -478,6 +572,8 @@ export function sortActionsByDependency(
         n.includes('/controllers/') || n.includes('public/css/') || n.includes('public/js/') ||
         n.includes('/radio/') || n.includes('/music/') || n.includes('/musica/') ||
         n.includes('/games/') || n.includes('/juegos/') || n.includes('/multimedia/') ||
+        n.includes('/admin/') || n.includes('/services/') || n.includes('/server/') ||
+        n.includes('/database/') || n.includes('server.properties') || n.includes('plugins/') ||
         n.endsWith('.java') || n.endsWith('.gradle') || n.endsWith('.kts') ||
         n.includes('fabric.mod.json') || n.includes('plugin.yml') || n.includes('mods.toml') ||
         n.includes('device/') || n.includes('scripts/')) {

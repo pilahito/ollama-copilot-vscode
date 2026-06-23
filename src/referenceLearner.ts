@@ -64,6 +64,13 @@ const BUILTIN_PATTERNS: Partial<Record<ProjectKind | 'generic', string[]>> = {
     'Clima: Open-Meteo sin API key en services/weatherApi.js',
     'Moderación: events/ + commands/ban.js con permisos GuildModeration',
   ],
+  'minecraft-server': [
+    'world/ — mundo generado (en .gitignore, no versionar)',
+    'plugins/ — archivos .jar de Paper/Spigot/Bukkit',
+    'config/ — YAML de plugins (LuckPerms, Essentials, etc.)',
+    'logs/ — registros del servidor',
+    'server.properties + eula.txt + start.sh en la raíz',
+  ],
   'minecraft-plugin': [
     'Paper: build.gradle paper-api, JavaPlugin onEnable, plugin.yml con commands',
     'Un CommandExecutor por comando en commands/ o package commands',
@@ -195,6 +202,10 @@ export function buildSimilarProjectQueries(
       if (features.includes('economy')) {
         gh('discord bot economy coins shop');
       }
+      break;
+    case 'minecraft-server':
+      queries.add('minecraft paper server folder structure world plugins config');
+      queries.add('site:github.com minecraft server setup paper spigot');
       break;
     case 'minecraft-plugin':
       gh('papermc spigot plugin java gradle');

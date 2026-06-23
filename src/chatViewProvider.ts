@@ -30,12 +30,14 @@ import {
   getDiagnosticsBlock,
   getEditorContextForFix,
   needsEditorContext,
+  resolveCodeEditor,
   wantsTeacherFix,
 } from './editorContext';
 import { EXPLAIN_CODE_PROMPT } from './prompts';
 import { enrichUserMessage } from './userIntent';
 import { detectBlueprint } from './projectBlueprints';
 import { gatherReferenceContext } from './referenceLearner';
+import { getEditorActionSpec, type EditorQuickAction } from './editorActions';
 import {
   getEffectivePrompt,
   getEditablePrompts,
@@ -60,7 +62,8 @@ import {
 type ChatMode = 'chat' | 'agent' | 'teacher';
 
 type WebviewInMessage =
-  | { type: 'send'; text: string; mode: ChatMode; includeEditor?: boolean }
+  | { type: 'send'; text: string; mode: ChatMode; includeEditor?: boolean; forceEditor?: boolean }
+  | { type: 'quickAction'; action: EditorQuickAction }
   | { type: 'checkConnection' }
   | { type: 'setProvider'; provider: string }
   | { type: 'setInternetMode'; useInternet: boolean }
@@ -195,7 +198,15 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         this.sendReceivedForTest = true;
         const gen = ++this.chatGeneration;
         this.post({ type: 'sendAck', gen });
-        await this.handleUserMessage(text, message.mode, message.includeEditor === true, gen);
+        await this.handleUserMessage(
+          text,
+          message.mode,
+          message.includeEditor === true,
+          gen,
+          message.forceEditor === true
+        );
+      } else if (message.type === 'quickAction') {
+        await this.runEditorQuickAction(message.action);
       } else if (message.type === 'setProvider') {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('provider', message.provider, vscode.ConfigurationTarget.Global);
@@ -521,13 +532,36 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   private pendingEditorEnrich: ReturnType<typeof enrichMessageWithEditor> | undefined;
 
-  /** Explica código del editor (captura ANTES de que el chat robe el foco). */
-  public async explainFromEditor(): Promise<void> {
-    const userText = 'Explica qué hace este código';
-    this.pendingEditorEnrich = enrichMessageWithEditor(userText, true);
+  /** Acción rápida del editor: explicar, generar, arreglar o refactorizar. */
+  public async runEditorQuickAction(action: EditorQuickAction): Promise<void> {
+    const editor = resolveCodeEditor();
+    if (!editor) {
+      vscode.window.showWarningMessage(
+        'Abre un archivo de código en el editor (o selecciona texto) y vuelve a intentarlo.'
+      );
+      return;
+    }
+
+    const spec = getEditorActionSpec(action);
+    if (spec.mode === 'agent' && !vscode.workspace.workspaceFolders?.length) {
+      vscode.window.showWarningMessage(
+        'Refactorizar requiere una carpeta de proyecto abierta (Archivo → Abrir carpeta).'
+      );
+      return;
+    }
+
+    this.pendingEditorEnrich = enrichMessageWithEditor(spec.prompt, spec.attachEditor);
     await this.reveal();
     await this.waitUntilReady(8000);
-    this.post({ type: 'simulateSend', text: userText, mode: 'chat' });
+
+    const gen = ++this.chatGeneration;
+    this.post({ type: 'sendAck', gen });
+    await this.handleUserMessage(spec.prompt, spec.mode, spec.attachEditor, gen, true);
+  }
+
+  /** Explica código del editor (captura ANTES de que el chat robe el foco). */
+  public async explainFromEditor(): Promise<void> {
+    await this.runEditorQuickAction('explain');
   }
 
   /** Limpia el historial del chat en el panel. */
@@ -745,7 +779,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     mode: ChatMode,
     includeEditor = false,
-    gen = this.chatGeneration
+    gen = this.chatGeneration,
+    forceEditor = false
   ): Promise<void> {
     let enriched: ReturnType<typeof enrichMessageWithEditor>;
 
@@ -753,7 +788,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       enriched = this.pendingEditorEnrich;
       this.pendingEditorEnrich = undefined;
     } else if (mode === 'agent') {
-      enriched = { text, attached: false, filePath: '', source: 'none' };
+      if (forceEditor || includeEditor) {
+        enriched = enrichMessageWithEditor(text, true);
+      } else {
+        enriched = { text, attached: false, filePath: '', source: 'none' };
+      }
     } else if (mode === 'teacher') {
       const fixIntent = wantsTeacherFix(text);
       enriched = enrichMessageWithEditor(text, fixIntent || needsEditorContext(text));
@@ -762,7 +801,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         return;
       }
     } else {
-      const wantsCode = includeEditor || needsEditorContext(text);
+      const wantsCode = forceEditor || includeEditor || needsEditorContext(text);
       enriched = enrichMessageWithEditor(text, wantsCode);
       if (wantsCode && !enriched.attached) {
         enriched = {
@@ -2610,19 +2649,19 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <p class="welcome-tip">📁 <strong>Tip:</strong> Siempre organizo por carpetas — <code>radio/</code>, <code>musica/</code>, <code>juegos/</code>, <code>commands/</code>… Un módulo por función, nunca todo en <code>index.js</code>.</p>
     
     <div class="suggestions">
-      <div class="suggestion" data-suggestion="Explica qué hace este código">
+      <div class="suggestion" data-action="explain" title="Explica el código del editor abierto">
         <span class="suggestion-icon">📚</span>
         <span>Explicar código</span>
       </div>
-      <div class="suggestion" data-suggestion="Genera una función para">
+      <div class="suggestion" data-action="generate" title="Genera código según el archivo o selección">
         <span class="suggestion-icon">✨</span>
         <span>Generar código</span>
       </div>
-      <div class="suggestion" data-suggestion="Arregla este error:">
+      <div class="suggestion" data-action="fix" title="Corrige errores y escribe el fix en el archivo">
         <span class="suggestion-icon">🔧</span>
         <span>Arreglar errores</span>
       </div>
-      <div class="suggestion" data-suggestion="Refactoriza este código para mejorarlo">
+      <div class="suggestion" data-action="refactor" title="Mejora la organización sin cambiar la funcionalidad">
         <span class="suggestion-icon">⚡</span>
         <span>Refactorizar</span>
       </div>
@@ -3148,14 +3187,21 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   function wantsEditorContext(text) {
     if (mode !== 'chat') return false;
-    return /explica|explain|qu[eé] hace|arregla|fix|refactoriza|este c[oó]digo|this code/i.test(text);
+    return /explica|explain|qu[eé] hace|genera|generar|arregla|fix|refactoriza|este c[oó]digo|this code/i.test(text);
   }
 
-  function useSuggestion(text) {
+  function runQuickAction(action) {
     if (isSending) return;
-    setMode('chat');
-    promptEl.value = text;
-    submitPrompt();
+    const labels = {
+      explain: '📚 Explicar código del editor',
+      generate: '✨ Generar código relacionado',
+      fix: '🔧 Arreglar errores del código',
+      refactor: '⚡ Refactorizar (mejor organización)',
+    };
+    startSending();
+    addMessage('user', labels[action] || action);
+    addTypingIndicator();
+    vscode.postMessage({ type: 'quickAction', action });
   }
 
   let lastInstalledModels = [];
@@ -3835,10 +3881,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  document.querySelectorAll('.suggestion[data-suggestion]').forEach((el) => {
+  document.querySelectorAll('.suggestion[data-action]').forEach((el) => {
     el.addEventListener('click', () => {
-      const text = el.getAttribute('data-suggestion');
-      if (text) useSuggestion(text);
+      const action = el.getAttribute('data-action');
+      if (action) runQuickAction(action);
     });
   });
 

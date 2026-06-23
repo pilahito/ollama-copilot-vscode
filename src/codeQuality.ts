@@ -165,9 +165,16 @@ export function buildFunctionalRequirementsBlock(
         lines.push('- Client.login + interactionCreate/command handlers');
         lines.push('- Cada slash command responde (reply/editReply)');
         break;
+      case 'minecraft-server':
+        lines.push('- server.properties + eula.txt + carpetas world/, plugins/, config/');
+        lines.push('- start.sh ejecutable; README con árbol de carpetas');
+        break;
       case 'minecraft-plugin':
         lines.push('- JavaPlugin onEnable + getCommand().setExecutor');
         lines.push('- plugin.yml con commands que existen en Java');
+        break;
+      case 'web-fullstack':
+        lines.push('- public/ + server/routes + database/schema separados');
         break;
       case 'minecraft-mod-fabric':
       case 'minecraft-mod-forge':

@@ -53,6 +53,7 @@ import {
   ReferenceLearner,
   shouldLearnFromReferences,
 } from './referenceLearner';
+import { buildOrganizationBlock } from './projectOrganization';
 import {
   buildIdeAgentPromptBlock,
   compileAndInstallSelf,
@@ -1278,7 +1279,9 @@ export class LocalAgent {
       `- Web: public/index.html + public/css/*.css + public/js/*.js (nunca todo inline)\n` +
       `- Discord: commands/ + events/ + carpeta por feature (radio/, musica/, juegos/) + index.js solo Client y login\n` +
       `- Bot con radio+música+juegos: radio/player.js, musica/player.js, juegos/trivia.js — commands/*.js solo delega\n` +
-      `- API: routes/ + controllers/ + index.js solo express.listen\n` +
+      `- Servidor Minecraft: world/ (mundo), plugins/ (.jar), config/ (YAML), server.properties — NO mezclar\n` +
+      `- Web+DB: public/ (front) + server/ (API) + database/ (schema) — separar capas\n` +
+      `- API: routes/ + controllers/ + database/ + index.js solo express.listen\n` +
       `- Juegos web: lógica en public/js/juego.js, main.js solo inicia\n` +
       `- ${profile.primaryEntry} SOLO: arranque, require(), registrar — NO toda la lógica\n` +
       (profile.blueprint
@@ -1297,6 +1300,7 @@ export class LocalAgent {
       intentUnderstandingRules() +
       functionalUnderstandingRules() +
       buildFunctionalRequirementsBlock(userPrompt, profile.blueprint) +
+      buildOrganizationBlock(profile.blueprint) +
       `\n` +
       `═══ APRENDER DE REFERENCIAS (OBLIGATORIO SI HAY CONTEXTO WEB) ═══\n` +
       `- Si el mensaje incluye REFERENCIAS o patrones aprendidos, **úsalo como modelo** de estructura y calidad.\n` +

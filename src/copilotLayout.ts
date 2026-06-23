@@ -4,6 +4,7 @@ import type { LocalChatViewProvider } from './chatViewProvider';
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 let openingChat = false;
+let chatPanelOpen = false;
 
 /** Vistas de otras extensiones IA que compiten por la barra derecha. */
 const COMPETING_VIEW_IDS = [
@@ -117,17 +118,58 @@ export async function openCopilotChat(
       throw new Error('La vista del chat no se inicializó. Recarga VS Code (Reload Window).');
     }
 
+    chatPanelOpen = true;
     log?.('[openCopilotChat] Chat abierto en panel derecho.');
   } finally {
     openingChat = false;
   }
 }
 
-/** Clic en icono izquierdo: explorador a la izquierda, chat Local Copilot a la derecha. */
+/** Oculta el panel derecho del chat (al cerrar el dock izquierdo). */
+export async function hideCopilotChat(log?: (line: string) => void): Promise<void> {
+  if (!chatPanelOpen) { return; }
+  try {
+    await vscode.commands.executeCommand('workbench.action.closeView', 'local.chatView');
+    log?.('[hideCopilotChat] closeView local.chatView');
+  } catch {
+    /* */
+  }
+  try {
+    await vscode.commands.executeCommand('workbench.action.auxiliaryBar.hide');
+    log?.('[hideCopilotChat] auxiliaryBar.hide');
+  } catch {
+    try {
+      await vscode.commands.executeCommand('workbench.action.toggleAuxiliaryBar');
+    } catch { /* */ }
+  }
+  chatPanelOpen = false;
+}
+
+export function isCopilotChatOpen(): boolean {
+  return chatPanelOpen;
+}
+
+/** Alterna chat: abre si está cerrado, oculta si ya está abierto. */
+export async function toggleCopilotChat(
+  chatProvider: LocalChatViewProvider,
+  log?: (line: string) => void
+): Promise<void> {
+  if (chatPanelOpen) {
+    await hideCopilotChat(log);
+    return;
+  }
+  await openCopilotChat(chatProvider, log);
+}
+
+/** Clic en icono izquierdo: alterna dock + chat (se oculta al pulsar de nuevo). */
 export async function onActivityBarIconClick(
   chatProvider: LocalChatViewProvider,
   log?: (line: string) => void
 ): Promise<void> {
+  if (chatPanelOpen) {
+    await hideCopilotChat(log);
+    return;
+  }
   try {
     await vscode.commands.executeCommand('workbench.view.explorer');
     log?.('[dock] Explorador izquierdo activo');

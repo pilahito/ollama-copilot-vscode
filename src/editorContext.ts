@@ -92,7 +92,7 @@ export function getDiagnosticsBlock(filePath: string): string {
 export function needsEditorContext(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (/explica.*c[oó]digo|explain.*code|qu[eé] hace este/i.test(t)) { return true; }
-  return /\b(explica|explain|qué hace|que hace|what does|para qué sirve|arregla|fix|corrige|refactoriza|refactor|este código|this code|el código|la función|analiza este|revisa este|mejora este|optimiza este|genera tests|documenta este|debug|depura)\b/i
+  return /\b(explica|explain|qué hace|que hace|what does|para qué sirve|genera|generar|arregla|fix|corrige|refactoriza|refactor|este código|this code|el código|la función|analiza este|revisa este|mejora este|optimiza este|genera tests|documenta este|debug|depura)\b/i
     .test(text);
 }
 

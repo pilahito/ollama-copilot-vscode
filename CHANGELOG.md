@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.37] - 2026-06-23
+
+### Added
+- **Toggle dock/chat**: pulsar el icono izquierdo oculta el panel derecho del chat
+- **Organización obligatoria** por tipo: servidor Minecraft (world/, plugins/, config/), web+DB, Discord (admin/, musica/, juegos/)
+- Blueprint **minecraft-server** y **web-fullstack**
+- Comandos **Generar código** y **Refactorizar**; botones del welcome funcionan con el editor
+
+### Fixed
+- Explicar / Generar / Arreglar / Refactorizar adjuntan código del editor siempre
+- Menú contextual del editor sin exigir selección (`editorTextFocus`)
+- Arreglar usa modo Profesor (escribe el fix); Refactorizar usa Agente
+
 ## [1.0.36] - 2026-06-23
 
 Resumen del día: agente más inteligente, aprendizaje de referencias GitHub, UI desbloqueada y publicación lista.

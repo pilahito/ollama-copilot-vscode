@@ -13,7 +13,8 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly onActivate: () => void | Promise<void>
+    private readonly onActivate: () => void | Promise<void>,
+    private readonly onDeactivate?: () => void | Promise<void>
   ) {}
 
   private triggerActivate(): void {
@@ -114,12 +115,11 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
     <div class="logo"><img src="${logoUri}" alt="Local Copilot" /></div>
     <h1>Local Copilot</h1>
     <p class="tagline">IA local con Ollama<br>Chat · Profesor · Agente</p>
-    <div class="status">✓ Chat activo en el panel derecho</div>
+    <div class="status" id="dock-status">Pulsa el icono para abrir/cerrar el chat</div>
   </div>
-  <p class="hint">El chat se abre automáticamente al pulsar este icono.</p>
+  <p class="hint">Clic en el icono Local Copilot: abre el chat a la derecha. Vuelve a pulsar para ocultarlo.</p>
   <script>
     const vscode = acquireVsCodeApi();
-    vscode.postMessage({ type: 'open' });
   </script>
 </body>
 </html>`;
@@ -127,6 +127,8 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
     webviewView.onDidChangeVisibility((visible) => {
       if (visible) {
         this.triggerActivate();
+      } else if (this.onDeactivate) {
+        void this.onDeactivate();
       }
     });
 

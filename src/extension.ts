@@ -28,7 +28,7 @@ import { LocalChatViewProvider }          from './chatViewProvider';
 
 import { GitHubService }                   from './githubService';
 import { initEditorContextTracking }       from './editorContext';
-import { openCopilotChat, onActivityBarIconClick } from './copilotLayout';
+import { openCopilotChat, onActivityBarIconClick, hideCopilotChat } from './copilotLayout';
 import { LocalDockViewProvider } from './dockViewProvider';
 import { runSelfTest, ExtensionMonitor } from './selfTest';
 import { initDebugLog } from './debugLog';
@@ -188,6 +188,7 @@ function activateExtension(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => monitor.stop() });
 
   const onDockActivated = () => onActivityBarIconClick(chatProvider, log);
+  const onDockHidden = () => hideCopilotChat(log);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -197,7 +198,7 @@ function activateExtension(context: vscode.ExtensionContext): void {
     ),
     vscode.window.registerWebviewViewProvider(
       LocalDockViewProvider.viewType,
-      new LocalDockViewProvider(context.extensionUri, onDockActivated)
+      new LocalDockViewProvider(context.extensionUri, onDockActivated, onDockHidden)
     )
   );
 
@@ -333,20 +334,23 @@ function activateExtension(context: vscode.ExtensionContext): void {
 
     // Explica el código del editor (selección o archivo visible).
     vscode.commands.registerCommand('local.explainCode', async () => {
-      await chatProvider.explainFromEditor();
+      await openLocalChat();
+      await chatProvider.runEditorQuickAction('explain');
     }),
 
-    // Envía el código del editor al agente para que lo corrija directamente.
-    vscode.commands.registerCommand('local.fixError', async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) { return; }
+    vscode.commands.registerCommand('local.generateCode', async () => {
+      await openLocalChat();
+      await chatProvider.runEditorQuickAction('generate');
+    }),
 
-      const filePath = editor.document.uri.fsPath;
-      void openLocalChat();
-      chatProvider.sendExternalPrompt(
-        `Arregla el código del archivo ${filePath}`,
-        'agent'
-      );
+    vscode.commands.registerCommand('local.fixError', async () => {
+      await openLocalChat();
+      await chatProvider.runEditorQuickAction('fix');
+    }),
+
+    vscode.commands.registerCommand('local.refactorCode', async () => {
+      await openLocalChat();
+      await chatProvider.runEditorQuickAction('refactor');
     }),
 
     // Pide al agente que analice la estructura general del proyecto.
