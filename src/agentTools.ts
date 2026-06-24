@@ -65,10 +65,17 @@ export function isAllowedShellCommand(command: string): boolean {
 }
 
 function safePath(root: string, rel: string): string | null {
-  const cleaned = rel.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  let cleaned = rel.replace(/\\/g, '/').replace(/^\.\//, '').trim();
   if (!cleaned || cleaned.includes('..')) { return null; }
+  const rootResolved = path.resolve(root);
+  if (path.isAbsolute(cleaned) && cleaned.startsWith(rootResolved)) {
+    return cleaned;
+  }
+  if (path.isAbsolute(cleaned)) {
+    cleaned = path.basename(cleaned);
+  }
   const full = path.resolve(root, cleaned);
-  if (!full.startsWith(path.resolve(root))) { return null; }
+  if (!full.startsWith(rootResolved)) { return null; }
   return full;
 }
 
@@ -135,6 +142,16 @@ export function parseAgentToolCalls(raw: string): AgentToolCall[] {
       reason: m[2].trim(),
       content: m[3],
     });
+  }
+
+  // Variante: modelo pone ```código o texto suelto tras WRITE
+  const writeAltRe =
+    /TOOL:\s*WRITE\s*\|\s*PATH:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n+(?:c[oó]digo\n)?(?:```[\w]*\n)?([\s\S]*?)(?:<<FIN>>|```\s*\n|(?=TOOL:)|$)/gi;
+  while ((m = writeAltRe.exec(upper)) !== null) {
+    const content = m[3].replace(/^c[oó]digo\n/i, '').replace(/```\s*$/,'').trim();
+    if (!content || content.length < 2) { continue; }
+    if (calls.some((c) => c.tool === 'write' && c.path === m[1].trim())) { continue; }
+    calls.push({ tool: 'write', path: m[1].trim(), reason: m[2].trim(), content });
   }
 
   return calls;

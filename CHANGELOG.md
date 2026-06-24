@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.5] - 2026-06-24
+
+### Added
+- Recomendaciones Ollama por **RAM + VRAM** al instalar (setup automático de modelos)
+- Catálogo ampliado: `starcoder2`, `codellama`, `mistral`, `gemma2`, `qwen2.5-coder:3b`
+- Búsqueda web: hasta **40 resultados** y **20 consultas** (máx. 30 consultas / 60 resultados)
+- Descripciones del modo **Ayudante** en bienvenida, ajustes y `viewsWelcome`
+- Perfil Spigot/FishRewards para el agente
+
+### Improved
+- Prompts Chat, Profesor y Ayudante (agente) más detallados
+- `autoSelectBestModels` usa plan de hardware + modelos instalados
+
 ## [1.5.0] - 2026-06-24
 
 ### Added — Ollama Build (agente como Cursor)

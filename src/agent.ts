@@ -105,6 +105,10 @@ import {
   buildLoopToAgentResult,
   shouldUseBuildLoop,
 } from './ollamaBuildLoop';
+import {
+  buildSpigotFishRewardsBlock,
+  wantsMinecraftPluginHelp,
+} from './designProfiles/spigotFishRewardsProfile';
 
 const execFileAsync = promisify(execFile);
 
@@ -344,15 +348,22 @@ export class LocalAgent {
       webContext += `\n\n${buildProfessionalCapabilitiesBlock()}`;
       onProgress('🤖 Capacidades profesionales + APIs + GitHub reuse inyectadas al agente');
     }
+    if (wantsMinecraftPluginHelp(effectivePrompt)) {
+      webContext += `\n\n${buildSpigotFishRewardsBlock()}`;
+      onProgress('⛏️ Perfil Spigot/FishRewards — validación packs YAML');
+    }
     const learner = new ReferenceLearner();
 
-    if (shouldLearnFromReferences(effectivePrompt, blueprint)) {
-      if (this.ollama.isInternetEnabled()) {
+    const agentAutoWeb = this.ollama.isAgentAutoWebSearchEnabled();
+    const webEnabled = agentAutoWeb || this.ollama.isInternetEnabled();
+
+    if (agentAutoWeb || shouldLearnFromReferences(effectivePrompt, blueprint)) {
+      if (webEnabled) {
         onProgress('🔎 Investigando proyectos similares en GitHub y guías open-source...');
       }
       const ref = await learner.resolveReferences(effectivePrompt, blueprint, {
-        internetEnabled: this.ollama.isInternetEnabled(),
-        searchMulti: (queries) => this.ollama.searchWebMulti(queries, 14),
+        internetEnabled: webEnabled,
+        searchMulti: (queries) => this.ollama.searchWebMulti(queries),
       });
       if (ref?.context) {
         webContext += ref.context;
@@ -360,16 +371,23 @@ export class LocalAgent {
       }
     }
 
-    const wantsWebResearch = this.ollama.isInternetEnabled() && (
-      this.ollama.needsWebSearch(effectivePrompt) ||
-      shouldAgentResearchWeb(effectivePrompt, blueprint)
+    const wantsWebResearch = agentAutoWeb || (
+      this.ollama.isInternetEnabled() && (
+        this.ollama.needsWebSearch(effectivePrompt) ||
+        shouldAgentResearchWeb(effectivePrompt, blueprint)
+      )
     );
     if (wantsWebResearch) {
-      onProgress('🌐 +Internet: investigando APIs y documentación...');
+      const maxWeb = this.ollama.getWebSearchMaxResults();
+      onProgress(
+        agentAutoWeb
+          ? `🌐 Búsqueda web automática del agente (hasta ${maxWeb} resultados)…`
+          : `🌐 +Internet: investigando (hasta ${maxWeb} resultados)…`
+      );
       const research = await this.ollama.researchWeb(effectivePrompt, { forAgent: true, blueprint });
       if (research.resultCount > 0) {
         webContext += research.context;
-        onProgress(`📚 ${research.resultCount} resultado(s) API/docs añadidos al agente`);
+        onProgress(`📚 ${research.resultCount} resultado(s) web añadidos al agente (máx. ${maxWeb})`);
       } else if (!webContext) {
         onProgress('⚠️ Búsqueda web sin resultados (DDG limitado); el agente usa código local + Ollama');
       }
@@ -379,7 +397,7 @@ export class LocalAgent {
     const smart = await gatherSmartContext({
       prompt: effectivePrompt,
       blueprint,
-      internetEnabled: this.ollama.isInternetEnabled(),
+      internetEnabled: webEnabled,
       github: this.github,
       hardware: this.ollama.getHardwareProfile(),
     });

@@ -20,34 +20,39 @@ export const findInstalledModel = (installed: string[], needle: string): string 
 };
 
 const COMPLETION_ORDER = [
+  'qwen2.5-coder:7b',
   'local-copilot-turbo',
-  'qwen2.5-coder:1.5b',
+  'starcoder2:7b',
+  'deepseek-coder:6.7b',
+  'codellama:7b',
   'qwen2.5-coder:3b',
+  'qwen2.5-coder:1.5b',
   'phi3:mini',
   'gemma2:2b',
-  'qwen2.5-coder:7b',
-  'codellama:7b',
   'deepseek-coder:1.3b',
 ];
 
 const CHAT_ORDER = [
-  'local-copilot-turbo',
   'qwen2.5-coder:14b',
+  'local-copilot-turbo',
   'qwen2.5:14b',
   'qwen2.5-coder:7b',
+  'mistral:7b',
   'llama3.1:8b',
   'llama3.2',
-  'mistral:7b',
   'deepseek-coder:6.7b',
+  'gemma2:9b',
 ];
 
 const AGENT_ORDER = [
   'qwen2.5-coder:14b',
-  'local-copilot-turbo',
   'qwen2.5-coder:7b',
   'deepseek-coder:6.7b',
   'codellama:13b',
+  'local-copilot-turbo',
+  'starcoder2:15b',
   'llama3.1:8b',
+  'mistral:7b',
 ];
 
 function pickFromOrder(installed: string[], order: string[]): string | null {
@@ -68,6 +73,25 @@ export function pickTaskModels(installed: string[]): TaskModels | null {
   const chat       = pickFromOrder(installed, CHAT_ORDER) ?? completion;
   const agent      = pickFromOrder(installed, AGENT_ORDER) ?? chat;
   return { chat, completion, agent };
+}
+
+/** Combina plan por hardware con modelos realmente instalados. */
+export function pickTaskModelsWithHardware(
+  installed: string[],
+  hwPlan: TaskModels
+): TaskModels | null {
+  if (!installed.length) { return hwPlan; }
+
+  const pick = (preferred: string, order: string[]) =>
+    findInstalledModel(installed, preferred) ??
+    pickFromOrder(installed, order) ??
+    installed[0];
+
+  return {
+    chat: pick(hwPlan.chat, CHAT_ORDER),
+    completion: pick(hwPlan.completion, COMPLETION_ORDER),
+    agent: pick(hwPlan.agent, AGENT_ORDER),
+  };
 }
 
 export function modelInstalled(installed: string[], name: string): boolean {

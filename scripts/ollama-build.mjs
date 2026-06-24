@@ -31,10 +31,13 @@ function log(msg) {
 }
 
 function safePath(rel) {
-  const c = rel.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  let c = rel.replace(/\\/g, '/').replace(/^\.\//, '').trim();
   if (!c || c.includes('..')) return null;
+  const rootR = path.resolve(ROOT);
+  if (path.isAbsolute(c) && c.startsWith(rootR)) return c;
+  if (path.isAbsolute(c)) c = path.basename(c);
   const full = path.resolve(ROOT, c);
-  if (!full.startsWith(path.resolve(ROOT))) return null;
+  if (!full.startsWith(rootR)) return null;
   return full;
 }
 
@@ -61,6 +64,13 @@ function parseTools(raw) {
 
   const writeRe = /TOOL:\s*WRITE\s*\|\s*PATH:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<CONTENIDO>>\n([\s\S]*?)<<FIN>>/gi;
   while ((m = writeRe.exec(raw)) !== null) calls.push({ tool: 'write', path: m[1].trim(), content: m[3] });
+
+  const writeAltRe = /TOOL:\s*WRITE\s*\|\s*PATH:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n+(?:c[oó]digo\n)?(?:```[\w]*\n)?([\s\S]*?)(?:<<FIN>>|```\s*\n|(?=TOOL:)|$)/gi;
+  while ((m = writeAltRe.exec(raw)) !== null) {
+    const content = m[3].replace(/^c[oó]digo\n/i, '').replace(/```\s*$/, '').trim();
+    if (!content || calls.some((c) => c.tool === 'write' && c.path === m[1].trim())) continue;
+    calls.push({ tool: 'write', path: m[1].trim(), content });
+  }
 
   const compileRe = /TOOL:\s*COMPILE/gi;
   if (compileRe.test(raw)) calls.push({ tool: 'compile' });
@@ -118,17 +128,17 @@ async function ollamaChat(messages) {
 }
 
 const SYSTEM = `Eres Ollama Build — agente autónomo en terminal como Cursor.
-USA HERRAMIENTAS (no solo texto):
+TIENES permiso total: los TOOL se ejecutan REALMENTE en el PC del usuario.
+PROHIBIDO: decir "no puedo", dar instrucciones al usuario, placeholders.
+USA HERRAMIENTAS (obligatorio):
 TOOL: LIST | PATH: .
-TOOL: READ | PATH: archivo
-TOOL: WRITE | PATH: ruta | MOTIVO: ...
+TOOL: WRITE | PATH: hello.js | MOTIVO: crear
 <<CONTENIDO>>
-código
+console.log('hola');
 <<FIN>>
-TOOL: RUN | CMD: npm install x | MOTIVO: deps
-TOOL: COMPILE
+TOOL: RUN | CMD: node hello.js | MOTIVO: probar
 TOOL: DONE | RESUMEN: ...
-Código REAL, modular por carpetas, español.`;
+Primero WRITE, luego RUN. Código REAL. Español.`;
 
 async function main() {
   if (!TASK) {
@@ -142,6 +152,8 @@ async function main() {
     { role: 'system', content: SYSTEM },
     { role: 'user', content: `TAREA: ${TASK}\nPROYECTO: ${ROOT}\nEmpieza con LIST y READ.` },
   ];
+
+  let writesOk = 0;
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     log(`── Ronda ${round}/${MAX_ROUNDS} ──`);
@@ -164,6 +176,7 @@ async function main() {
       log(`  → ${call.tool} ${call.path || call.command || ''}`);
       const out = await execTool(call);
       results.push(`[${call.tool}] ${out}`);
+      if (call.tool === 'write' && out.startsWith('WRITE OK')) writesOk++;
       log(`    ${out.split('\n')[0].slice(0, 100)}`);
     }
 
@@ -171,6 +184,15 @@ async function main() {
     messages.push({ role: 'user', content: results.join('\n\n') + '\n\nContinúa o TOOL: DONE.' });
 
     if (done) {
+      const needsWrite = /\b(crea|crear|implementa|write)\b/i.test(TASK);
+      if (needsWrite && writesOk === 0) {
+        log('⚠ DONE rechazado — sin WRITE. Pidiendo archivo…');
+        messages.push({
+          role: 'user',
+          content: 'RECHAZADO: DONE sin WRITE. Emite TOOL: WRITE con <<CONTENIDO>> ahora.',
+        });
+        continue;
+      }
       log(`✅ COMPLETADO: ${done.summary || 'ok'}`);
       process.exit(0);
     }

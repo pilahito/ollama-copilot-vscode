@@ -31,6 +31,7 @@ import {
   findInstalledModel,
   modelInstalled,
   pickTaskModels,
+  pickTaskModelsWithHardware,
   resolveTaskModel,
   type TaskKind,
   type TaskModels,
@@ -118,7 +119,7 @@ export class OllamaClient {
   constructor() {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
     this.provider = this.getConfig<ProviderName>('provider', 'auto');
-    this.useInternet = this.getConfig('useInternet', false);
+    this.useInternet = this.getConfig('useInternet', true);
     this.geminiApiKey = this.getConfig('geminiApiKey', '');
     this.geminiModel = this.getConfig('geminiModel', 'gemini-2.0-flash-exp');
     this.openRouterApiKey = this.getConfig('openRouterApiKey', '');
@@ -140,6 +141,23 @@ export class OllamaClient {
 
   private getConfig<T>(key: string, fallback: T): T {
     return vscode.workspace.getConfiguration('local').get(key, fallback);
+  }
+
+  /** Máximo de URLs únicas que se inyectan al agente/chat tras buscar en internet. */
+  getWebSearchMaxResults(): number {
+    const n = this.getConfig<number>('webSearchMaxResults', 40);
+    return Math.min(Math.max(n, 5), 60);
+  }
+
+  /** Máximo de consultas DuckDuckGo/npm/Wikipedia por petición. */
+  getWebSearchMaxQueries(): number {
+    const n = this.getConfig<number>('webSearchMaxQueries', 20);
+    return Math.min(Math.max(n, 3), 30);
+  }
+
+  /** El Ayudante investiga en internet en cada petición (sin pulsar +Internet). */
+  isAgentAutoWebSearchEnabled(): boolean {
+    return this.getConfig<boolean>('agentAutoWebSearch', true);
   }
 
   /** Opciones Ollama para chat rápido (menos contexto = menos latencia). */
@@ -204,7 +222,7 @@ export class OllamaClient {
   refreshConfig(): void {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
     this.provider = this.getConfig<ProviderName>('provider', 'auto');
-    this.useInternet = this.getConfig('useInternet', false);
+    this.useInternet = this.getConfig('useInternet', true);
     this.geminiApiKey = this.getConfig('geminiApiKey', '');
     this.geminiModel = this.getConfig('geminiModel', 'gemini-2.0-flash-exp');
     this.openRouterApiKey = this.getConfig('openRouterApiKey', '');
@@ -605,7 +623,10 @@ export class OllamaClient {
    */
   async autoSelectBestModels(): Promise<TaskModels | null> {
     const installed = await this.getInstalledOllamaModels();
-    const picked    = pickTaskModels(installed);
+    const hw = getHardwareProfile();
+    const picked = installed.length
+      ? pickTaskModelsWithHardware(installed, hw.taskPlan)
+      : hw.taskPlan;
     if (!picked) { return null; }
 
     const config = vscode.workspace.getConfiguration('local');
@@ -1282,7 +1303,7 @@ export class OllamaClient {
       }
 
       if (data.RelatedTopics) {
-        for (const topic of data.RelatedTopics.slice(0, 5)) {
+        for (const topic of data.RelatedTopics.slice(0, 10)) {
           if (topic.Text && topic.FirstURL) {
             results.push({
               title: topic.Text.split(' - ')[0] || 'Relacionado',
@@ -1323,7 +1344,7 @@ export class OllamaClient {
         /<a[^>]+href="([^"]+)"[^>]*class='result-link'>([^<]+)<\/a>[\s\S]*?class='result-snippet'>\s*([\s\S]*?)<\/td>/gi;
 
       let match: RegExpExecArray | null;
-      while ((match = blockRe.exec(html)) !== null && results.length < 6) {
+      while ((match = blockRe.exec(html)) !== null && results.length < 12) {
         const url = this.decodeDdgRedirect(match[1]);
         const title = this.stripHtml(match[2]);
         const snippet = this.stripHtml(match[3]).slice(0, 280);
@@ -1370,7 +1391,7 @@ export class OllamaClient {
   }
 
   /**
-   * Búsqueda web multi-fuente: DDG JSON → DDG Lite → Wikipedia → npm.
+   * Búsqueda web multi-fuente: combina DDG JSON + Lite + Wikipedia + npm (más resultados).
    */
   async searchWeb(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
     const sources = [
@@ -1380,19 +1401,29 @@ export class OllamaClient {
       () => this.searchNpmDocs(query),
     ];
 
+    const seen = new Set<string>();
+    const merged: { title: string; url: string; snippet: string }[] = [];
+
     for (const source of sources) {
-      const hits = await source();
-      if (hits.length > 0) { return hits; }
+      try {
+        const hits = await source();
+        for (const hit of hits) {
+          if (!hit.url || seen.has(hit.url)) { continue; }
+          seen.add(hit.url);
+          merged.push(hit);
+        }
+      } catch { /* siguiente fuente */ }
     }
 
-    return [];
+    return merged;
   }
 
   /** Varias búsquedas y deduplicación por URL (GitHub/repos primero). */
   async searchWebMulti(
     queries: string[],
-    maxResults = 10
+    maxResults?: number
   ): Promise<{ title: string; url: string; snippet: string }[]> {
+    const cap = maxResults ?? this.getWebSearchMaxResults();
     const seen = new Set<string>();
     const merged: { title: string; url: string; snippet: string }[] = [];
 
@@ -1407,7 +1438,7 @@ export class OllamaClient {
       }
     }
 
-    return prioritizeGitHubHits(merged).slice(0, maxResults);
+    return prioritizeGitHubHits(merged).slice(0, cap);
   }
 
   /** Consultas de búsqueda derivadas de la petición del usuario/agente. */
@@ -1434,8 +1465,14 @@ export class OllamaClient {
     if (/\b(api\s+rest|express|backend)\b/i.test(prompt)) {
       queries.add('express.js REST API tutorial');
     }
-    if (/\b(plugin|spigot|papermc|bukkit)\b/i.test(prompt) && /\b(minecraft|mc)\b/i.test(prompt)) {
+    if (/\b(plugin|spigot|papermc|bukkit|fishrewards)\b/i.test(prompt) && /\b(minecraft|mc|pesca|fish)\b/i.test(prompt)) {
       queries.add('PaperMC plugin development plugin.yml gradle');
+      queries.add('FishRewards spigot plugin pack yaml configuration');
+      queries.add('SpigotMC FishRewards effect type firework');
+    }
+    if (/\bfishrewards\b/i.test(prompt)) {
+      queries.add('FishRewards 1.6.9 spigot pack rewards yaml');
+      queries.add('Paper API 26.1 plugin tutorial');
     }
     if (/\b(fabric|quilt)\b/i.test(prompt) && /\b(mod|minecraft)\b/i.test(prompt)) {
       queries.add('Fabric mod development fabric.mod.json loom gradle');
@@ -1460,20 +1497,51 @@ export class OllamaClient {
     }
 
     const apis = detectApiRecommendations(prompt, blueprint);
-    for (const api of apis.slice(0, 3)) {
+    for (const api of apis.slice(0, 6)) {
       if (api.docs) { queries.add(`${api.name} API documentation`); }
       else { queries.add(`${api.name} npm example`); }
     }
 
+    const stacks: [RegExp, string][] = [
+      [/\breact\b/i, 'React hooks tutorial 2026'],
+      [/\bvue\b/i, 'Vue 3 composition API guide'],
+      [/\bnext\.?js\b/i, 'Next.js app router example'],
+      [/\bpython\b/i, 'Python best practices 2026'],
+      [/\bfastapi\b/i, 'FastAPI async example'],
+      [/\bjava\b/i, 'Java Maven project structure'],
+      [/\bgradle\b/i, 'Gradle build plugin example'],
+      [/\btypescript\b/i, 'TypeScript strict mode patterns'],
+      [/\bollama\b/i, 'Ollama API chat example'],
+      [/\bamp\b/i, 'CubeCoders AMP API login'],
+      [/\bdocker\b/i, 'Docker compose production example'],
+      [/\bnginx\b/i, 'Nginx reverse proxy config'],
+      [/\bssh\b/i, 'SSH automation best practices linux'],
+    ];
+    for (const [re, q] of stacks) {
+      if (re.test(prompt)) { queries.add(q); }
+    }
+
+    const skip = new Set(['para', 'como', 'este', 'esta', 'quiero', 'necesito', 'hazme', 'crea', 'crear']);
+    const tokens = (prompt.match(/\b[a-z][a-z0-9_.-]{2,}\b/gi) ?? [])
+      .map((t) => t.toLowerCase())
+      .filter((t) => !skip.has(t));
+    for (const t of [...new Set(tokens)].slice(0, 10)) {
+      queries.add(`${t} official documentation`);
+    }
+
     queries.add(base);
+    queries.add(`${base} stack overflow`);
+    queries.add(`${base} github example 2026`);
     if (/\b(api|sdk|lib|framework|npm|discord|react|node|python|bot)\b/i.test(prompt)) {
       queries.add(`${base} documentación oficial`);
       queries.add(`${base} ejemplo código github`);
+      queries.add(`${base} npm package`);
     } else {
       queries.add(`${base} tutorial`);
+      queries.add(`${base} best practices`);
     }
 
-    return [...queries].slice(0, 5);
+    return [...queries].slice(0, this.getWebSearchMaxQueries());
   }
 
   /**
@@ -1485,7 +1553,7 @@ export class OllamaClient {
     options: { forAgent?: boolean; blueprint?: ProjectBlueprint | null } = {}
   ): Promise<{ context: string; resultCount: number }> {
     const queries = this.buildResearchQueries(prompt, options.blueprint);
-    const results = await this.searchWebMulti(queries);
+    const results = await this.searchWebMulti(queries, this.getWebSearchMaxResults());
 
     if (results.length === 0) {
       return { context: '', resultCount: 0 };

@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { buildWelcomeMessage, getHardwareProfile } from './hardwareProfile';
 import { OllamaClient }                    from './ollamaClient';
 import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
 import { LocalChatViewProvider }          from './chatViewProvider';
@@ -90,7 +91,30 @@ function activateExtension(context: vscode.ExtensionContext): void {
 
   const extVersion = context.extension.packageJSON.version ?? '?';
   const announceKey = `localCopilotAnnounced_v${extVersion}`;
+  const ollama        = new OllamaClient();
+
   void (async () => {
+    const setupKey = 'localCopilotHardwareSetup_v2';
+    if (!context.globalState.get<boolean>(setupKey)) {
+      await context.globalState.update(setupKey, true);
+      const hw = getHardwareProfile();
+      await ollama.autoSelectBestModels();
+      const gpu = hw.vramGb ? ` · GPU ${hw.vramGb} GB` : '';
+      const short =
+        `Local Copilot v${extVersion} — ${hw.ramGb} GB RAM${gpu} (${hw.tier}). ` +
+        `Chat: ${hw.taskPlan.chat} · Agente: ${hw.taskPlan.agent}`;
+      const choice = await vscode.window.showInformationMessage(
+        short,
+        'Ver modelos recomendados',
+        'Recargar VS Code'
+      );
+      if (choice === 'Ver modelos recomendados') {
+        outputChannel.appendLine(`[setup]\n${buildWelcomeMessage(hw)}`);
+        await vscode.commands.executeCommand('local.openChat');
+      } else if (choice === 'Recargar VS Code') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    }
     if (!context.globalState.get<boolean>(announceKey)) {
       await context.globalState.update(announceKey, true);
       const choice = await vscode.window.showInformationMessage(
@@ -102,8 +126,6 @@ function activateExtension(context: vscode.ExtensionContext): void {
       }
     }
   })();
-
-  const ollama        = new OllamaClient();
   const github        = new GitHubService();
   const statusBarItem = createStatusBar(context);
 

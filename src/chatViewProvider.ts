@@ -296,6 +296,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         void this.reveal();
         this.post({ type: 'sendAck', gen });
         if (mode === 'agent') {
+          await this.ensureAgentAutoInternet();
           this.resetAgentPanel();
           this.pushAgentPanelStep(
             `📨 Petición: ${text.slice(0, 160)}${text.length > 160 ? '…' : ''}`
@@ -597,13 +598,28 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     this.applyBootstrapToUi(snap);
   }
 
+  /** Activa +Internet automáticamente cuando el Ayudante investiga en web. */
+  private async ensureAgentAutoInternet(): Promise<void> {
+    const config = vscode.workspace.getConfiguration('local');
+    if (!config.get<boolean>('agentAutoWebSearch', true)) { return; }
+    if (!config.get<boolean>('useInternet', true)) {
+      await config.update('useInternet', true, vscode.ConfigurationTarget.Global);
+      this.ollama.refreshConfig();
+    }
+    this.post({
+      type: 'connectionStatus',
+      internetEnabled: true,
+      currentModel: this.getCurrentModel(),
+    });
+  }
+
   /** Sincroniza selector IA / +Internet con la configuración guardada. */
   private postInitState(): void {
     const config = vscode.workspace.getConfiguration('local');
     this.post({
       type: 'initState',
       provider: config.get<string>('provider', 'auto'),
-      useInternet: config.get<boolean>('useInternet', false),
+      useInternet: config.get<boolean>('useInternet', true),
       version: this.getExtensionVersion(),
     });
   }
@@ -831,6 +847,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     await this.reveal();
     await this.waitUntilReady(12_000);
+    await this.ensureAgentAutoInternet();
     const gen = ++this.chatGeneration;
     this.resetAgentPanel();
     this.pushAgentPanelStep(`🚀 Ollama Build: ${text.slice(0, 140)}${text.length > 140 ? '…' : ''}`);
@@ -1744,7 +1761,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       if (!skipWeb) {
         const ref = await gatherReferenceContext(text, blueprint, {
           internetEnabled: this.ollama.isInternetEnabled(),
-          searchMulti: (queries) => this.ollama.searchWebMulti(queries, 14),
+          searchMulti: (queries) => this.ollama.searchWebMulti(queries),
         });
         if (ref?.context) {
           referenceContext = ref.context;
@@ -2323,6 +2340,16 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     font-size: 12px !important;
     opacity: 0.9;
     max-width: 320px !important;
+  }
+
+  .welcome-mode-desc {
+    font-size: 12px !important;
+    opacity: 0.95;
+    max-width: 320px !important;
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
   }
 
   .welcome-tip {
@@ -3570,10 +3597,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <div class="messages" id="messages">
   <div class="welcome" id="welcome">
     <div class="welcome-icon"><img src="${iconUri}" alt="" class="welcome-icon-img" /></div>
-    <h2>Ayudante de programación</h2>
+    <h2 id="welcome-title">Ayudante de programación</h2>
     <p>Tu asistente de IA dentro de <strong>VS Code</strong>. Tres modos para programar mejor:</p>
-    <p class="welcome-modes"><strong>Chat</strong> — ideas y sugerencias · <strong>Profesor</strong> — aprende el código · <strong>Ayudante</strong> — escribe y modifica archivos</p>
-    <p class="welcome-tip">Abre un archivo, elige una sugerencia o describe qué quieres programar. El panel está a la <strong>derecha</strong>.</p>
+    <p class="welcome-modes"><strong>Chat</strong> — ideas y sugerencias · <strong>Profesor</strong> — aprende el código · <strong>Ayudante</strong> — agente autónomo que escribe archivos</p>
+    <p class="welcome-mode-desc" id="welcome-mode-desc">💬 <strong>Chat</strong> — responde preguntas y sugiere código sin modificar tus archivos.</p>
+    <p class="welcome-tip" id="welcome-tip">Abre un archivo, elige una sugerencia o describe qué quieres programar. El panel está a la <strong>derecha</strong>.</p>
     
     <div class="suggestions">
       <div class="suggestion" data-action="create" title="Elige web, Discord, WhatsApp, API… y funciones">
@@ -3853,9 +3881,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
           <p class="prompt-hint">Cuando el Profesor diagnostica y escribe el fix en el editor.</p>
         </div>
         <div class="prompt-field">
-          <label>🤖 Agente <button type="button" class="prompt-restore" data-restore="agent">Restaurar</button></label>
-          <textarea class="prompt-textarea" id="prompt-agent" spellcheck="false" placeholder="Instrucciones extra para el agente (opcional)…"></textarea>
-          <p class="prompt-hint">Se añaden al prompt del Agente. Vacío = solo comportamiento por defecto.</p>
+          <label>😈 Ayudante (agente) <button type="button" class="prompt-restore" data-restore="agent">Restaurar</button></label>
+          <textarea class="prompt-textarea" id="prompt-agent" spellcheck="false" placeholder="Instrucciones del agente autónomo…"></textarea>
+          <p class="prompt-hint">Lee el proyecto, busca en internet, escribe archivos, ejecuta terminal (git/npm/ssh) y Ollama Build. Se añade al prompt del Ayudante.</p>
         </div>
       </div>
       <button type="button" class="btn-save" id="btn-save-settings">💾 Guardar ajustes</button>
@@ -4194,6 +4222,21 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  const MODE_WELCOME = {
+    chat: {
+      desc: '💬 <strong>Chat</strong> — responde preguntas, ideas y snippets sin modificar tus archivos.',
+      tip: 'Abre un archivo o describe qué quieres programar. El panel está a la <strong>derecha</strong>.',
+    },
+    teacher: {
+      desc: '🎓 <strong>Profesor</strong> — enseña paso a paso y corrige errores del editor si dices «esto falla, corrígelo».',
+      tip: 'Pide explicaciones con ejemplos o pega el error del terminal para diagnosticarlo.',
+    },
+    agent: {
+      desc: '😈 <strong>Ayudante (agente)</strong> — lee tu proyecto, busca en internet, <strong>escribe archivos</strong>, ejecuta terminal (git, npm, ssh) y <strong>Ollama Build</strong> multi-ronda.',
+      tip: 'Abre la carpeta del proyecto. Ej: «Crea commands/shop.js» o «Arregla el plugin y despliega».',
+    },
+  };
+
   function setMode(m) {
     mode = m;
     const tabChat = document.getElementById('mode-chat');
@@ -4204,13 +4247,27 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     if (tabTeacher) tabTeacher.classList.toggle('active', m === 'teacher');
 
     const hintEl = document.getElementById('hint');
+    if (m === 'agent') {
+      const internetEl = document.getElementById('internet-mode');
+      if (internetEl && internetEl.value !== 'true') {
+        internetEl.value = 'true';
+        vscode.postMessage({ type: 'setInternetMode', useInternet: true });
+      }
+    }
+
     if (hintEl) {
       hintEl.textContent = m === 'agent'
-        ? '🤖 Agente: recuadro morado ENCIMA del input + archivos en disco (puede tardar horas)'
+        ? '😈 Ayudante: internet automático + escribe en disco + terminal + Ollama Build'
         : m === 'teacher'
           ? '🎓 Profesor: enseña y corrige errores del editor (di "esto falla, corrígelo")'
           : '💬 Chat: responde preguntas sin modificar archivos';
     }
+
+    const welcomeModeDesc = document.getElementById('welcome-mode-desc');
+    const welcomeTip = document.getElementById('welcome-tip');
+    const welcomeInfo = MODE_WELCOME[m] || MODE_WELCOME.chat;
+    if (welcomeModeDesc) welcomeModeDesc.innerHTML = welcomeInfo.desc;
+    if (welcomeTip) welcomeTip.innerHTML = welcomeInfo.tip;
 
     const prompt = document.getElementById('prompt');
     if (prompt) {

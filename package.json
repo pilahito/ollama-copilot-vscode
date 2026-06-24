@@ -1,8 +1,8 @@
 {
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
-  "description": "Asistente de IA para VS Code: chat con sugerencias, modo Profesor para aprender y Ayudante que edita tu código. Autocompletado local con Ollama.",
-  "version": "1.5.0",
+  "description": "Asistente de IA en VS Code con tres modos: Chat (ideas y sugerencias), Profesor (aprende el código) y Ayudante/agente (lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build). Autocompletado local con Ollama.",
+  "version": "1.5.5",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -304,6 +304,12 @@
           "name": "Ayudante de programación",
           "icon": "media/activitybar.png"
         }
+      ],
+      "localcopilot-chatWelcome": [
+        {
+          "view": "local.chatView",
+          "contents": "Tu asistente de IA dentro de VS Code.\n\n**Chat** — ideas y sugerencias\n**Profesor** — aprende el código\n**Ayudante** — agente autónomo: lee tu proyecto, busca en internet, escribe y modifica archivos, ejecuta terminal (git, npm, ssh) y Ollama Build\n\n[Abrir chat](command:local.openChat)"
+        }
       ]
     },
     "configuration": {
@@ -334,7 +340,12 @@
         "local.useInternet": {
           "type": "boolean",
           "default": true,
-          "description": "Permite búsqueda web con Ollama cuando la pregunta lo necesita (docs, noticias, tutoriales). No busca en cada mensaje."
+          "description": "Búsqueda web con DuckDuckGo/Wikipedia/npm. El Ayudante la activa solo si agentAutoWebSearch está activo."
+        },
+        "local.agentAutoWebSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ayudante: investiga en internet automáticamente en cada petición (hasta webSearchMaxResults)."
         },
         "local.ollamaUrl": {
           "type": "string",
@@ -450,6 +461,16 @@
           "type": "number",
           "default": 20,
           "description": "Rondas máximas del bucle Ollama Build (3–50)."
+        },
+        "local.webSearchMaxResults": {
+          "type": "number",
+          "default": 40,
+          "description": "Resultados web máximos inyectados al agente/chat con +Internet (5–60)."
+        },
+        "local.webSearchMaxQueries": {
+          "type": "number",
+          "default": 20,
+          "description": "Consultas de búsqueda por petición con +Internet (3–30)."
         },
         "local.grokMode": {
           "type": "boolean",
@@ -588,7 +609,7 @@
           "type": "string",
           "default": "",
           "editPresentation": "multilineText",
-          "description": "Instrucciones extra para el Agente (se añaden al prompt del sistema)."
+          "description": "Prompt del modo Ayudante/agente: lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build (vacío = predeterminado)."
         }
       }
     }

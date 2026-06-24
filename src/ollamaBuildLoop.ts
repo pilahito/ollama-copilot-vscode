@@ -131,6 +131,7 @@ export class OllamaBuildLoop {
     let lastResponse = '';
     let complete = false;
     let summary = '';
+    let writesOk = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
       opts.onProgress(`🔁 Ollama Build — ronda ${round}/${maxRounds}…`);
@@ -162,6 +163,7 @@ export class OllamaBuildLoop {
         opts.onProgress(`🔧 ${call.tool.toUpperCase()}${call.path ? ` → ${call.path}` : ''}${call.command ? ` → ${call.command.slice(0, 60)}` : ''}`);
         const result = await executeAgentTool(call, ctx);
         results.push(result);
+        if ((call.tool === 'write' || call.tool === 'edit') && result.ok) { writesOk++; }
         if (result.output.length < 500) {
           opts.onProgress(result.output.split('\n')[0]);
         }
@@ -174,6 +176,17 @@ export class OllamaBuildLoop {
       });
 
       if (doneCall) {
+        const needsWrite = /\b(crea|crear|implementa|añade|modifica|arregla|genera|write)\b/i.test(opts.task);
+        if (needsWrite && writesOk === 0) {
+          opts.onProgress('⚠️ DONE rechazado — no escribiste ningún archivo. Usa TOOL: WRITE ahora.');
+          messages.push({
+            role: 'user',
+            content:
+              'RECHAZADO: dijiste DONE pero no hubo WRITE/EDIT exitoso. ' +
+              'Emite TOOL: WRITE | PATH: ... | MOTIVO: ... con <<CONTENIDO>> código real.',
+          });
+          continue;
+        }
         complete = true;
         summary = doneCall.summary ?? lastResponse.slice(0, 2000);
         opts.onProgress(`✅ ${summary.slice(0, 200)}`);

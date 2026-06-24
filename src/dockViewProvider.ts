@@ -114,10 +114,10 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
   <div class="brand-card">
     <div class="logo"><img src="${logoUri}" alt="Local Copilot" /></div>
     <h1>Local Copilot</h1>
-    <p class="tagline">Ayudante de programación en VS Code<br>Chat · Profesor · Ayudante</p>
+    <p class="tagline">Ayudante de programación en VS Code<br>Chat · Profesor · Ayudante (agente)</p>
     <div class="status" id="dock-status">Pulsa el icono 😈 para abrir el chat</div>
   </div>
-  <p class="hint"><strong>El chat se abre a la derecha</strong> (panel «Chat IA»).<br>Usa <em>Chat</em> para ideas, <em>Profesor</em> para aprender y <em>Ayudante</em> para editar código en tu proyecto.</p>
+  <p class="hint"><strong>El chat se abre a la derecha</strong> (panel «Chat IA»).<br><em>Chat</em> ideas · <em>Profesor</em> aprende · <em>Ayudante</em> escribe archivos, terminal e internet.</p>
   <script>
     const vscode = acquireVsCodeApi();
   </script>

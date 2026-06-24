@@ -28,14 +28,17 @@
 
 ## ¿Qué es?
 
-**Local Copilot** es una extensión de VS Code que replica lo esencial de GitHub Copilot **sin pagar suscripción**:
+**Local Copilot** es una extensión de VS Code que replica lo esencial de GitHub Copilot **sin pagar suscripción**. Desarrollada por [**DavidPilahito7**](https://github.com/pilahito) desde **España** 🇪🇸.
 
 | Función | Qué hace |
 |---------|----------|
 | ⚡ **Autocompletado** | Sugerencias inline mientras escribes |
-| 💬 **Chat** | Preguntas, explicaciones, snippets |
-| 🤖 **Agente** | Lee tu proyecto, **investiga** (con +Internet), **escribe archivos** y ejecuta `git`/`npm` |
+| 💬 **Chat** | Ideas, sugerencias y snippets (no modifica archivos) |
+| 🎓 **Profesor** | Aprende el código paso a paso y corrige errores |
+| 😈 **Ayudante** | Agente autónomo: lee el proyecto, **internet** (hasta 40 resultados), **escribe archivos**, terminal y **Ollama Build** |
 | 🐙 **GitHub** | Conectar cuenta, publicar y clonar repos |
+
+Al instalar, detecta tu **RAM y GPU** y recomienda modelos Ollama (`qwen2.5-coder:7b/14b`, `local-copilot-turbo`, etc.).
 
 Todo corre en tu máquina con **Ollama**, o puedes activar **+Internet** para buscar documentación actualizada antes de programar.
 

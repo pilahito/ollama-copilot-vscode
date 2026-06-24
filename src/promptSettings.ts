@@ -3,6 +3,7 @@ import {
   SYSTEM_PROMPT,
   TEACHER_PROMPT,
   TEACHER_FIX_PROMPT,
+  AGENT_PROMPT,
 } from './prompts';
 
 export interface PromptFields {
@@ -16,7 +17,7 @@ export const PROMPT_DEFAULTS: PromptFields = {
   chat: SYSTEM_PROMPT,
   teacher: TEACHER_PROMPT,
   teacherFix: TEACHER_FIX_PROMPT,
-  agent: '',
+  agent: AGENT_PROMPT,
 };
 
 const CONFIG_KEYS: Record<keyof PromptFields, string> = {
@@ -33,9 +34,6 @@ function getConfig(): vscode.WorkspaceConfiguration {
 /** Prompt efectivo usado en runtime (custom o por defecto). */
 export function getEffectivePrompt(field: keyof PromptFields): string {
   const custom = getConfig().get<string>(CONFIG_KEYS[field], '').trim();
-  if (field === 'agent') {
-    return custom;
-  }
   return custom || PROMPT_DEFAULTS[field];
 }
 
