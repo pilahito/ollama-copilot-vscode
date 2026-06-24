@@ -52,6 +52,43 @@ export function buildGrokSystemBlock(target: 'local' | 'ssh', sshDisplay?: strin
   );
 }
 
+export function isBuildLoopEnabled(): boolean {
+  return vscode.workspace.getConfiguration('local').get<boolean>('agentBuildLoop', true);
+}
+
+export function getBuildMaxRounds(): number {
+  const n = vscode.workspace.getConfiguration('local').get<number>('agentBuildMaxRounds', 20);
+  return Math.min(Math.max(n, 3), 50);
+}
+
+/** Bloque sistema para Ollama Build — agente de código autónomo como Cursor. */
+export function buildOllamaBuildSystemBlock(): string {
+  return (
+    `═══ OLLAMA BUILD (agente autónomo como Cursor) ═══\n` +
+    `Eres un ingeniero senior que TRABAJA solo: lees, escribes, ejecutas terminal y verificas.\n` +
+    `NO des solo consejos — USA HERRAMIENTAS hasta completar la tarea.\n\n` +
+    `HERRAMIENTAS (emite una o varias por ronda):\n` +
+    `TOOL: LIST | PATH: .\n` +
+    `TOOL: READ | PATH: src/archivo.ts | MOTIVO: revisar\n` +
+    `TOOL: GREP | PATTERN: función | PATH: src | MOTIVO: buscar\n` +
+    `TOOL: WRITE | PATH: ruta/archivo.js | MOTIVO: crear\n<<CONTENIDO>>\ncódigo COMPLETO\n<<FIN>>\n` +
+    `TOOL: EDIT | PATH: archivo.js | BUSCAR: texto_viejo | REEMPLAZAR: texto_nuevo\n` +
+    `TOOL: RUN | CMD: npm install paquete | MOTIVO: deps\n` +
+    `TOOL: COMPILE | MOTIVO: verificar build\n` +
+    `TOOL: TEST | MOTIVO: verificar tests\n` +
+    `TOOL: DONE | RESUMEN: qué hiciste y cómo probarlo\n\n` +
+    `PROTOCOLO:\n` +
+    `1. LIST + READ antes de modificar\n` +
+    `2. WRITE/EDIT con código REAL ejecutable (sin TODO ni placeholders)\n` +
+    `3. RUN/COMPILE/TEST tras cambios importantes\n` +
+    `4. Si falla un comando, lee el error y corrige con EDIT/WRITE\n` +
+    `5. Estructura modular por carpetas (commands/, events/, public/js/…)\n` +
+    `6. DONE solo cuando compile o la tarea esté resuelta\n\n` +
+    `PROHIBIDO: solo PLAN/EXPLICACION sin TOOL, placeholders, "copia este código".\n` +
+    `Responde en español. Sé directo como Grok.\n\n`
+  );
+}
+
 export function buildGrokUserPrompt(snapshot: string, round: number, priorFindings = ''): string {
   return (
     `[MODO GROK — Ronda ${round}]\n` +

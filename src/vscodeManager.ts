@@ -55,6 +55,8 @@ const SAFE_VSCODE_COMMANDS = new Set([
   'local.openDock',
   'local.runSelfTest',
   'local.godMode',
+  'local.ollamaBuild',
+  'local.ollamaBuildTerminal',
   'local.debugVisual',
   'local.selectModel',
   'local.buildNekotina',

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.0] - 2026-06-24
+
+### Added — Ollama Build (agente como Cursor)
+- **Ollama Build Loop**: agente multi-ronda con herramientas READ, WRITE, EDIT, GREP, LIST, RUN, COMPILE, TEST
+- El modelo recibe resultados de terminal y corrige hasta `TOOL: DONE`
+- Comandos: `Local: Ollama Build` (chat) y `Local: Ollama Build en terminal`
+- Script terminal: `node scripts/ollama-build.mjs "tu tarea"` — log en `/tmp/ollama-build.log`
+- Settings: `local.agentBuildLoop` (default true), `local.agentBuildMaxRounds` (default 20)
+
 ## [1.4.7] - 2026-06-24
 
 ### Fixed

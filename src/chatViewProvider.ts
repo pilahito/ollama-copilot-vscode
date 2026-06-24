@@ -818,6 +818,35 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
    * Modo Grok autónomo: analiza y mejora el sistema durante horas (2–3h por defecto).
    * Local o vía SSH según configuración.
    */
+  /** Ollama Build — agente autónomo como Cursor (multi-ronda con herramientas). */
+  public async runOllamaBuild(task?: string): Promise<void> {
+    const text =
+      task?.trim() ||
+      (await vscode.window.showInputBox({
+        title: 'Ollama Build',
+        prompt: 'Describe la tarea (el agente leerá, escribirá y ejecutará terminal solo)',
+        placeHolder: 'Ej: Crea bot Discord con radio, música y admin panel',
+      }))?.trim();
+    if (!text) { return; }
+
+    await this.reveal();
+    await this.waitUntilReady(12_000);
+    const gen = ++this.chatGeneration;
+    this.resetAgentPanel();
+    this.pushAgentPanelStep(`🚀 Ollama Build: ${text.slice(0, 140)}${text.length > 140 ? '…' : ''}`);
+    this.post({ type: 'sendAck', gen });
+    this.post({ type: 'setMode', mode: 'agent' });
+    this.post({ type: 'responseStart', agentLive: true });
+    try {
+      await this.handleAgentMode(text, gen, this.requirementsSession);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.finishAgentPanel(`⚠ Error: ${msg}`);
+      this.post({ type: 'response', text: `⚠ Ollama Build: ${msg}`, done: true, append: true, agentLive: true });
+      this.post({ type: 'agentDone' });
+    }
+  }
+
   public async runGrokSystemOptimize(preferSsh = true): Promise<void> {
     await this.reveal();
     await this.waitUntilReady(12_000);

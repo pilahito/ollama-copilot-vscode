@@ -100,6 +100,11 @@ import {
   type VscodeAction,
 } from './vscodeManager';
 import { buildGrokSystemBlock, isGrokModeEnabled } from './grokMode';
+import {
+  OllamaBuildLoop,
+  buildLoopToAgentResult,
+  shouldUseBuildLoop,
+} from './ollamaBuildLoop';
 
 const execFileAsync = promisify(execFile);
 
@@ -381,6 +386,33 @@ export class LocalAgent {
     if (smart?.block) {
       webContext += `\n\n${smart.block}`;
       onProgress(smart.summary);
+    }
+
+    if (shouldUseBuildLoop(effectivePrompt)) {
+      onProgress('🚀 **Ollama Build** — agente autónomo (lee, escribe, terminal, verifica)…');
+      const loop = new OllamaBuildLoop(this.ollama);
+      const sink = this.streamSink;
+      const build = await loop.run({
+        task: effectivePrompt + (webContext ? `\n\n═══ CONTEXTO ═══\n${webContext}` : ''),
+        rootPath,
+        projectTree,
+        model: agentModel,
+        onProgress,
+        onToken: sink ? (t) => sink(t) : undefined,
+      });
+      if (build.complete || build.actions.length > 0) {
+        const result = buildLoopToAgentResult(build);
+        result.explanation =
+          `${build.summary}\n\n` +
+          (build.actions.length > 0
+            ? `**Archivos tocados (${build.actions.length}):**\n` +
+              build.actions.slice(0, 20).map((a) => `✏️ \`${a.filePath}\``).join('\n')
+            : '') +
+          `\n\n_Rondas Ollama Build: ${build.rounds}${build.complete ? ' — completado' : ''}_`;
+        onProgress(build.complete ? '✅ Ollama Build terminado' : `ℹ️ Ollama Build: ${build.rounds} ronda(s)`);
+        return result;
+      }
+      onProgress('ℹ️ Ollama Build sin cambios — usando generador clásico…');
     }
 
     onProgress('⚙️ Generando código y aplicando cambios…');

@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
   "description": "Asistente de IA para VS Code: chat con sugerencias, modo Profesor para aprender y Ayudante que edita tu código. Autocompletado local con Ollama.",
-  "version": "1.4.7",
+  "version": "1.5.0",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -143,6 +143,18 @@
         "category": "Local Copilot"
       },
       {
+        "command": "local.ollamaBuild",
+        "title": "Local: Ollama Build (agente autónomo como Cursor)",
+        "icon": "$(rocket)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.ollamaBuildTerminal",
+        "title": "Local: Ollama Build en terminal",
+        "icon": "$(terminal)",
+        "category": "Local Copilot"
+      },
+      {
         "command": "local.grokOptimizeSystem",
         "title": "Local: Modo Grok — optimizar sistema (2–3 h)",
         "icon": "$(sparkle)",
@@ -251,6 +263,8 @@
         { "command": "local.analyzeProject" },
         { "command": "local.openAutoTerminal" },
         { "command": "local.sshAnalyzeSystem" },
+        { "command": "local.ollamaBuild" },
+        { "command": "local.ollamaBuildTerminal" },
         { "command": "local.grokOptimizeSystem" },
         { "command": "local.buildNekotina" },
         { "command": "local.useInternetProvider" },
@@ -427,6 +441,16 @@
           "default": "Local Auto",
           "description": "Nombre de la terminal automática."
         },
+        "local.agentBuildLoop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ollama Build: agente autónomo multi-ronda (lee, escribe, terminal, verifica) como Cursor."
+        },
+        "local.agentBuildMaxRounds": {
+          "type": "number",
+          "default": 20,
+          "description": "Rondas máximas del bucle Ollama Build (3–50)."
+        },
         "local.grokMode": {
           "type": "boolean",
           "default": true,
@@ -586,7 +610,8 @@
     "test:agent-chat-live": "node scripts/test-agent-chat-live.mjs",
     "test:battle": "node scripts/launch-battle-test.mjs",
     "backup:github": "bash scripts/backup-to-github.sh",
-    "backup:install-cron": "bash scripts/install-backup-cron.sh"
+    "backup:install-cron": "bash scripts/install-backup-cron.sh",
+    "build:terminal": "node scripts/ollama-build.mjs"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

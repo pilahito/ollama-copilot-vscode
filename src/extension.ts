@@ -514,6 +514,26 @@ function activateExtension(context: vscode.ExtensionContext): void {
       );
     }),
 
+    vscode.commands.registerCommand('local.ollamaBuild', async () => {
+      await openLocalChat();
+      await chatProvider.runOllamaBuild();
+    }),
+
+    vscode.commands.registerCommand('local.ollamaBuildTerminal', async () => {
+      const task = await vscode.window.showInputBox({
+        title: 'Ollama Build (terminal)',
+        prompt: 'Tarea para el agente en terminal',
+        placeHolder: 'Ej: Implementa feature X y ejecuta tests',
+      });
+      if (!task) { return; }
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? context.extensionPath;
+      const term = vscode.window.createTerminal({ name: 'Ollama Build', cwd });
+      term.show();
+      const script = path.join(context.extensionPath, 'scripts', 'ollama-build.mjs');
+      term.sendText(`node "${script}" ${JSON.stringify(task)}`);
+      vscode.window.showInformationMessage('Ollama Build en terminal — sigue el log en /tmp/ollama-build.log');
+    }),
+
     vscode.commands.registerCommand('local.grokOptimizeSystem', async () => {
       const choice = await vscode.window.showQuickPick(
         [
