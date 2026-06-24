@@ -1,8 +1,8 @@
 {
   "name": "local-copilot",
-  "displayName": "Local Copilot — IA Local",
-  "description": "Copilot gratuito para VS Code: autocompletado, chat, agente que programa con Ollama, +Internet para investigar, e integración GitHub.",
-  "version": "1.0.37",
+  "displayName": "Local Copilot — Ayudante de programación",
+  "description": "Asistente de IA para VS Code: chat con sugerencias, modo Profesor para aprender y Ayudante que edita tu código. Autocompletado local con Ollama.",
+  "version": "1.4.7",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -61,7 +61,7 @@
       },
       {
         "command": "local.openDock",
-        "title": "Local: Abrir chat (barra izquierda)",
+        "title": "Local: Abrir chat (barra derecha)",
         "icon": "$(flame)",
         "category": "Local Copilot"
       },
@@ -79,6 +79,11 @@
         "command": "local.generateCode",
         "title": "Local: Generar código",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "local.createProject",
+        "title": "Local: Crear proyecto (web, Discord, WhatsApp…)",
+        "icon": "$(rocket)"
       },
       {
         "command": "local.refactorCode",
@@ -108,6 +113,18 @@
         "category": "Local Copilot"
       },
       {
+        "command": "local.testAgentLive",
+        "title": "Local: Test agente en vivo (Nekotina — chat visible)",
+        "icon": "$(debug-restart)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.battleReady",
+        "title": "Local: Batalla Nekotina (UI visible — listo para Discord)",
+        "icon": "$(rocket)",
+        "category": "Local Copilot"
+      },
+      {
         "command": "local.toggleInlineSuggestions",
         "title": "Local: Activar/Desactivar autocompletado"
       },
@@ -118,6 +135,24 @@
       {
         "command": "local.openAutoTerminal",
         "title": "Local: Abrir terminal automática (SSH/Auto)"
+      },
+      {
+        "command": "local.sshAnalyzeSystem",
+        "title": "Local: Analizar sistema SSH (diagnóstico Grok)",
+        "icon": "$(server-process)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.grokOptimizeSystem",
+        "title": "Local: Modo Grok — optimizar sistema (2–3 h)",
+        "icon": "$(sparkle)",
+        "category": "Local Copilot"
+      },
+      {
+        "command": "local.buildNekotina",
+        "title": "Local: Construir bot Nekotina con Ollama (tiempo real)",
+        "icon": "$(robot)",
+        "category": "Local Copilot"
       },
       {
         "command": "local.useInternetProvider",
@@ -198,12 +233,15 @@
         { "command": "local.openDock" },
         { "command": "local.explainCode", "when": "editorTextFocus" },
         { "command": "local.generateCode", "when": "editorTextFocus" },
+        { "command": "local.createProject" },
         { "command": "local.fixError", "when": "editorTextFocus" },
         { "command": "local.refactorCode", "when": "editorTextFocus" },
         { "command": "local.checkConnection" },
         { "command": "local.runSelfTest" },
         { "command": "local.debugVisual" },
         { "command": "local.godMode" },
+        { "command": "local.testAgentLive" },
+        { "command": "local.battleReady" },
         { "command": "local.toggleInlineSuggestions" },
         { "command": "local.githubLogin" },
         { "command": "local.githubLogout" },
@@ -212,6 +250,9 @@
         { "command": "local.githubRepos" },
         { "command": "local.analyzeProject" },
         { "command": "local.openAutoTerminal" },
+        { "command": "local.sshAnalyzeSystem" },
+        { "command": "local.grokOptimizeSystem" },
+        { "command": "local.buildNekotina" },
         { "command": "local.useInternetProvider" },
         { "command": "local.selectModel" },
         { "command": "local.supportDonate" },
@@ -229,7 +270,7 @@
       "secondarySidebar": [
         {
           "id": "localcopilot-chat",
-          "title": "Local Copilot",
+          "title": "Chat IA",
           "icon": "media/activitybar.png"
         }
       ]
@@ -239,14 +280,14 @@
         {
           "type": "webview",
           "id": "local.dockView",
-          "name": "Local Copilot"
+          "name": "😈 Inicio"
         }
       ],
       "localcopilot-chat": [
         {
           "type": "webview",
           "id": "local.chatView",
-          "name": "Chat IA",
+          "name": "Ayudante de programación",
           "icon": "media/activitybar.png"
         }
       ]
@@ -278,7 +319,7 @@
         },
         "local.useInternet": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Permite búsqueda web con Ollama cuando la pregunta lo necesita (docs, noticias, tutoriales). No busca en cada mensaje."
         },
         "local.ollamaUrl": {
@@ -323,22 +364,42 @@
         },
         "local.agentAutoCommitPush": {
           "type": "boolean",
+          "default": false,
+          "description": "Tras modificar archivos, commit+push automático a Git. Desactivado por defecto — solo activa si quieres subir a GitHub."
+        },
+        "local.agentUnrestricted": {
+          "type": "boolean",
           "default": true,
-          "description": "Tras modificar archivos, el agente hace commit y push automático a tu repositorio Git (si hay origin)."
+          "description": "Agente sin restricciones en Ollama local: implementa cualquier petición técnica (NSFW, bots, etc.) sin rechazos."
         },
         "local.agentIdeMode": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Agente IDE: instalar/desinstalar extensiones VS Code, ejecutar comandos del IDE y listar extensiones."
         },
         "local.agentSelfModify": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Permite al agente modificar el código de Local Copilot y recompilar/instalar la extensión (solo en el repo ollama-copilot-vscode)."
+        },
+        "local.agentAutoRebuild": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tras modificar el código de Local Copilot, recompila e instala la extensión automáticamente (requiere local.agentSelfModify)."
+        },
+        "local.autoReloadAfterUpdate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Recarga VS Code automáticamente tras instalar una nueva versión de Local Copilot."
+        },
+        "local.agentAutoOpenFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Si no hay carpeta abierta, el Agente abre el selector de carpeta y reintenta tu petición al abrir el proyecto."
         },
         "local.enableAutomation": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Activa la terminal automática para usar comandos locales o SSH."
         },
         "local.sshUser": {
@@ -365,6 +426,21 @@
           "type": "string",
           "default": "Local Auto",
           "description": "Nombre de la terminal automática."
+        },
+        "local.grokMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Modo Grok: análisis profundo y proactivo del sistema (local o SSH)."
+        },
+        "local.grokMaxHours": {
+          "type": "number",
+          "default": 3,
+          "description": "Horas máximas para optimización autónoma Modo Grok (0.5–8)."
+        },
+        "local.sshAutoAnalyze": {
+          "type": "boolean",
+          "default": false,
+          "description": "Al abrir terminal SSH automática, iniciar análisis Grok del servidor tras conectar."
         },
         "local.geminiApiKey": {
           "type": "string",
@@ -496,7 +572,21 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "node esbuild.js",
-    "watch": "node esbuild.js --watch"
+    "watch": "node esbuild.js --watch",
+    "test": "node scripts/run-all-tests.mjs",
+    "test:full": "node scripts/run-all-tests.mjs && node test_all_options.mjs",
+    "test:v1038": "node scripts/test-v1038.mjs",
+    "test:ollama-modes": "node scripts/test-modes-ollama.mjs",
+    "test:stress": "node scripts/stress-test-ollama.mjs",
+    "test:stress:quick": "node scripts/stress-test-ollama.mjs --quick",
+    "test:stress:extended": "node scripts/stress-test-ollama.mjs --extended",
+    "test:agent-debug": "node scripts/test-agent-debug.mjs",
+    "test:agent-debug:quick": "node scripts/test-agent-debug.mjs --quick",
+    "test:nekotina-e2e": "node scripts/test-nekotina-user-e2e.mjs",
+    "test:agent-chat-live": "node scripts/test-agent-chat-live.mjs",
+    "test:battle": "node scripts/launch-battle-test.mjs",
+    "backup:github": "bash scripts/backup-to-github.sh",
+    "backup:install-cron": "bash scripts/install-backup-cron.sh"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

@@ -33,12 +33,12 @@ const SPECS: Record<EditorQuickAction, EditorActionSpec> = {
     teacherFix: true,
   },
   refactor: {
-    mode: 'agent',
+    mode: 'teacher',
     prompt:
-      'Refactoriza el código del archivo abierto: misma funcionalidad, mejor organización, ' +
-      'nombres claros y módulos separados. Aplica los cambios en el proyecto.',
+      'Refactoriza solo este código: misma funcionalidad, mejor legibilidad y organización. ' +
+      'No reestructures otros archivos del proyecto.',
     attachEditor: true,
-    teacherFix: false,
+    teacherFix: true,
   },
 };
 

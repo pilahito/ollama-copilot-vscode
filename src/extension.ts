@@ -21,6 +21,9 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { OllamaClient }                    from './ollamaClient';
 import { LocalInlineCompletionProvider }  from './inlineCompletionProvider';
@@ -33,6 +36,9 @@ import { LocalDockViewProvider } from './dockViewProvider';
 import { runSelfTest, ExtensionMonitor } from './selfTest';
 import { initDebugLog } from './debugLog';
 import { runVisualDebug } from './visualDebug';
+import { runAgentLiveTest } from './agentLiveTest';
+import { runNekotinaBattleTest } from './nekotinaBattleTest';
+import { isSshAutoAnalyzeEnabled } from './grokMode';
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
@@ -43,6 +49,28 @@ const POLLING_INTERVAL_MS = 60_000;
 const RECOMMENDED_MODEL = 'qwen2.5-coder:7b';
 
 const outputChannel = vscode.window.createOutputChannel('Local Copilot');
+
+const BATTLE_FLAG_PATH = path.join(os.tmpdir(), 'local-copilot-battle-ready.flag');
+
+/** Espera el flag de batalla (npm run test:battle) hasta 3 min y lanza test visible. */
+async function pollBattleReadyFlag(
+  chatProvider: LocalChatViewProvider,
+  log: (line: string) => void
+): Promise<void> {
+  for (let i = 0; i < 36; i++) {
+    if (!fs.existsSync(BATTLE_FLAG_PATH)) {
+      await new Promise<void>((r) => setTimeout(r, 5_000));
+      continue;
+    }
+    try { fs.unlinkSync(BATTLE_FLAG_PATH); } catch { /* ignore */ }
+    log('[battle] AUTO — batalla Nekotina (chat visible, escribe letra a letra)…');
+    outputChannel.show(true);
+    await openCopilotChat(chatProvider, log);
+    await new Promise<void>((r) => setTimeout(r, 2_000));
+    void runNekotinaBattleTest(chatProvider, log);
+    return;
+  }
+}
 
 // ── Activación ────────────────────────────────────────────────────────────────
 
@@ -59,6 +87,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
 function activateExtension(context: vscode.ExtensionContext): void {
   initEditorContextTracking(context);
+
+  const extVersion = context.extension.packageJSON.version ?? '?';
+  const announceKey = `localCopilotAnnounced_v${extVersion}`;
+  void (async () => {
+    if (!context.globalState.get<boolean>(announceKey)) {
+      await context.globalState.update(announceKey, true);
+      const choice = await vscode.window.showInformationMessage(
+        `Local Copilot v${extVersion} listo — chat a la derecha, pulsa 😈 en la barra.`,
+        'Recargar VS Code'
+      );
+      if (choice === 'Recargar VS Code') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
+    }
+  })();
 
   const ollama        = new OllamaClient();
   const github        = new GitHubService();
@@ -106,7 +149,8 @@ function activateExtension(context: vscode.ExtensionContext): void {
 
   const log = (line: string) => outputChannel.appendLine(line);
   initDebugLog(log);
-  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama, github, log);
+  const chatProvider = new LocalChatViewProvider(context.extensionUri, ollama, github, log, context);
+  chatProvider.setOpenChatPanel(() => openCopilotChat(chatProvider, log));
   const monitor = new ExtensionMonitor(ollama, chatProvider, log);
 
   context.subscriptions.push(
@@ -137,7 +181,7 @@ function activateExtension(context: vscode.ExtensionContext): void {
       const msg = err instanceof Error ? err.message : String(err);
       outputChannel.appendLine(`[openChat] ${msg}`);
       vscode.window.showWarningMessage(
-        'No se pudo abrir el chat a la derecha. Haz clic en el icono Local Copilot (izquierda) o activa Ver → Apariencia → Barra lateral secundaria.'
+        'No se pudo abrir el chat a la derecha. Pulsa el icono 😈 (izquierda) o activa Ver → Apariencia → Barra lateral secundaria.'
       );
     }
   };
@@ -156,23 +200,27 @@ function activateExtension(context: vscode.ExtensionContext): void {
     }
 
     let healthy = false;
-    for (let attempt = 0; attempt < 8 && !healthy; attempt++) {
-      await openLocalChat();
-      const ready = await chatProvider.waitUntilReady(15_000);
+    for (let attempt = 0; attempt < 5 && !healthy; attempt++) {
+      if (attempt > 0) {
+        await openLocalChat();
+      }
+      const ready = await chatProvider.waitUntilReady(12_000);
       if (!ready) {
-        log(`[startup] Webview esperando… (${attempt + 1}/8)`);
-        await new Promise<void>((r) => setTimeout(r, 2_500));
+        log(`[startup] Webview esperando… (${attempt + 1}/5)`);
+        await new Promise<void>((r) => setTimeout(r, 2_000));
         continue;
       }
-      const pingOk = await chatProvider.testWebviewPing(12_000);
+      const pingOk = await chatProvider.testWebviewPing(10_000);
       if (pingOk) {
         await chatProvider.forceSyncModels();
         healthy = true;
         log('[startup] ✓ Chat listo (ping OK, modelos cargados)');
         await context.globalState.update('localCopilotLastHealthy', Date.now());
+        void chatProvider.resumePendingAgentRequest();
+        void pollBattleReadyFlag(chatProvider, log);
       } else {
-        log(`[startup] Ping reintento ${attempt + 1}/8…`);
-        await new Promise<void>((r) => setTimeout(r, 3_000));
+        log(`[startup] Ping reintento ${attempt + 1}/5…`);
+        await new Promise<void>((r) => setTimeout(r, 2_000));
       }
     }
 
@@ -251,6 +299,42 @@ function activateExtension(context: vscode.ExtensionContext): void {
     }),
 
     // Modo dios: depuración visual completa (chat + profesor + agente + usuario)
+    vscode.commands.registerCommand('local.testAgentLive', async () => {
+      outputChannel.show(true);
+      log('[agent-live] Test en vivo — verás cada petición escribirse letra a letra en el chat Agente…');
+      await openLocalChat();
+      outputChannel.show(true);
+      const result = await runAgentLiveTest(chatProvider, log);
+      if (result.ok) {
+        vscode.window.showInformationMessage(
+          `✓ Test agente en vivo OK — ${result.passed} pruebas. Fallos visibles en el chat + /tmp/local-copilot-debug.log`
+        );
+      } else {
+        log(`[agent-live] ${result.failed} fallo(s) — revisa mensajes ROJOS en el chat Agente`);
+        outputChannel.show(true);
+        vscode.window.showWarningMessage(
+          `Test agente: ${result.failed} fallo(s). Mira el chat (mensajes rojos) y /tmp/local-copilot-debug.log`
+        );
+      }
+    }),
+
+    vscode.commands.registerCommand('local.battleReady', async () => {
+      outputChannel.show(true);
+      log('[battle] Batalla Nekotina — UI visible, agente escribe en el chat…');
+      await openLocalChat();
+      const result = await runNekotinaBattleTest(chatProvider, log);
+      if (result.readyForBattle) {
+        vscode.window.showInformationMessage(
+          `🏆 LISTO PARA LA BATALLA — ${result.commandCoverage}% comandos · Log: /tmp/local-copilot-debug.log`
+        );
+      } else {
+        outputChannel.show(true);
+        vscode.window.showWarningMessage(
+          `Batalla: ${result.failed} fallo(s). Mira el chat Agente (rojo/verde) y el log.`
+        );
+      }
+    }),
+
     vscode.commands.registerCommand('local.godMode', async () => {
       outputChannel.show(true);
       log('[god] Modo dios iniciado…');
@@ -343,6 +427,11 @@ function activateExtension(context: vscode.ExtensionContext): void {
       await chatProvider.runEditorQuickAction('generate');
     }),
 
+    vscode.commands.registerCommand('local.createProject', async () => {
+      await openLocalChat();
+      await chatProvider.runProjectCreationWizard();
+    }),
+
     vscode.commands.registerCommand('local.fixError', async () => {
       await openLocalChat();
       await chatProvider.runEditorQuickAction('fix');
@@ -395,6 +484,47 @@ function activateExtension(context: vscode.ExtensionContext): void {
       const userPart = sshUser ? `${sshUser}@` : '';
       const portPart = sshPort && sshPort !== 22 ? ` -p ${sshPort}` : '';
       terminal.sendText(`${sshCommand} ${userPart}${sshHost}${portPart}`, true);
+
+      if (isSshAutoAnalyzeEnabled()) {
+        vscode.window.showInformationMessage(
+          'SSH abierto — el análisis Grok del sistema comenzará en 15s (local.sshAutoAnalyze).',
+          'Iniciar ahora',
+          'Cancelar'
+        ).then((choice) => {
+          if (choice === 'Cancelar') { return; }
+          const delay = choice === 'Iniciar ahora' ? 2_000 : 15_000;
+          setTimeout(() => {
+            void chatProvider.runGrokSystemOptimize(true);
+          }, delay);
+        });
+      }
+    }),
+
+    vscode.commands.registerCommand('local.sshAnalyzeSystem', async () => {
+      await openLocalChat();
+      await chatProvider.runSshSystemAnalyze(true);
+    }),
+
+    vscode.commands.registerCommand('local.buildNekotina', async () => {
+      const term = vscode.window.createTerminal({ name: 'Nekotina — Ollama Live' });
+      term.show();
+      term.sendText(`node "${path.join(context.extensionPath, 'scripts', 'extension-nekotina-live.mjs')}"`);
+      vscode.window.showInformationMessage(
+        'Local Copilot: construyendo Nekotina con Ollama — mira la terminal "Nekotina — Ollama Live"'
+      );
+    }),
+
+    vscode.commands.registerCommand('local.grokOptimizeSystem', async () => {
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: 'SSH remoto', description: 'Analiza el servidor en local.sshHost (2–3 h)' },
+          { label: 'Sistema local', description: 'Analiza esta máquina (2–3 h)' },
+        ],
+        { placeHolder: 'Modo Grok — ¿dónde optimizar?' }
+      );
+      if (!choice) { return; }
+      await openLocalChat();
+      void chatProvider.runGrokSystemOptimize(choice.label.includes('SSH'));
     }),
 
     // ── Comandos de GitHub ──────────────────────────────────────────────────────

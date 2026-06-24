@@ -8,6 +8,13 @@ import { OllamaClient } from './ollamaClient';
 import type { LocalChatViewProvider } from './chatViewProvider';
 import { getEffectivePrompt } from './promptSettings';
 import { openCopilotChat } from './copilotLayout';
+import {
+  AGENT_SELF_TEST_SYSTEM_PROMPT,
+  hasAgentCreationOutput,
+  hasValidAccionBlock,
+  looksLikeCreationResponse,
+  looksLikeRefusal,
+} from './ollamaDefense';
 
 export interface SelfTestResult {
   ok: boolean;
@@ -18,31 +25,77 @@ export interface SelfTestResult {
 
 type LogFn = (line: string) => void;
 
-const MODE_TESTS: Array<{
+interface ModeTest {
   label: string;
   mode: 'chat' | 'teacher' | 'agent';
-  user: string;
   task: 'chat' | 'teacher' | 'agent';
-}> = [
+  user: string;
+  validate: (text: string) => { ok: boolean; detail: string };
+}
+
+const MODE_TESTS: ModeTest[] = [
   {
     label: 'Chat',
     mode: 'chat',
     task: 'chat',
-    user: '¿Qué es una función en JavaScript? Responde en 1 frase.',
+    user:
+      'Créame un mini bot Discord con /hola que responda "Hola mundo". ' +
+      'Dame el código del comando en un bloque ```javascript. Responde breve.',
+    validate: (text) => {
+      if (looksLikeRefusal(text)) {
+        return { ok: false, detail: 'rechazo detectado — Ollama debe defenderse y dar código' };
+      }
+      if (!looksLikeCreationResponse(text)) {
+        return { ok: false, detail: 'sin código útil (falta bloque ``` o lógica)' };
+      }
+      return { ok: true, detail: 'código sin rechazo' };
+    },
   },
   {
     label: 'Profesor',
     mode: 'teacher',
     task: 'teacher',
-    user: 'Explica qué hace console.log en una línea.',
+    user:
+      'Enséñame a crear un archivo suma.js con function suma(a,b){ return a+b }. ' +
+      'Paso a paso corto con ejemplo de código.',
+    validate: (text) => {
+      if (looksLikeRefusal(text)) {
+        return { ok: false, detail: 'rechazo detectado — el profesor debe enseñar con código' };
+      }
+      if (!/suma|function|return/i.test(text)) {
+        return { ok: false, detail: 'no explica la función suma' };
+      }
+      return { ok: true, detail: 'enseñanza con código' };
+    },
   },
   {
-    label: 'Agente',
+    label: 'Agente (crear archivo)',
     mode: 'agent',
     task: 'agent',
-    user: 'Lista 2 pasos para crear un proyecto web con HTML. Responde breve.',
+    user:
+      'Créame el archivo selftest-demo.js con una función suma(a, b) que devuelva a + b y module.exports = { suma }.',
+    validate: (text) => {
+      if (looksLikeRefusal(text)) {
+        return { ok: false, detail: 'rechazo detectado — el agente debe crear con ACCION' };
+      }
+      if (!hasAgentCreationOutput(text)) {
+        return { ok: false, detail: 'sin ACCION ni código de creación' };
+      }
+      const formatNote = hasValidAccionBlock(text) ? 'formato canónico' : 'ACCION+markdown (reintento recomendado)';
+      if (!/suma|module\.exports/i.test(text)) {
+        return { ok: false, detail: 'ACCION sin función suma' };
+      }
+      return { ok: true, detail: `creación con suma (${formatNote})` };
+    },
   },
 ];
+
+function buildAgentTestSystemPrompt(): string {
+  const custom = getEffectivePrompt('agent').trim();
+  return custom
+    ? `${AGENT_SELF_TEST_SYSTEM_PROMPT}\n═══ INSTRUCCIONES PERSONALIZADAS ═══\n${custom}\n`
+    : AGENT_SELF_TEST_SYSTEM_PROMPT;
+}
 
 /** Ejecuta una batería de pruebas contra Ollama y los modos de la extensión. */
 export async function runSelfTest(
@@ -61,7 +114,7 @@ export async function runSelfTest(
     if (ok) { passed++; } else { failed++; }
   };
 
-  log('[selfTest] ── Inicio autotest ──');
+  log('[selfTest] ── Inicio autotest (defensa Ollama + creación) ──');
 
   // 1. Conexión Ollama
   try {
@@ -100,7 +153,10 @@ export async function runSelfTest(
   // 3. Modos chat / profesor / agente
   for (const test of MODE_TESTS) {
     try {
-      const system = getEffectivePrompt(test.mode === 'agent' ? 'agent' : test.mode);
+      const system =
+        test.mode === 'agent'
+          ? buildAgentTestSystemPrompt()
+          : getEffectivePrompt(test.mode) || 'Eres un asistente de programación.';
       const model = ollama.getModelForTask(test.task);
       const streamFn = test.mode === 'agent'
         ? ollama.agentChatStream.bind(ollama)
@@ -110,20 +166,24 @@ export async function runSelfTest(
       const response = await Promise.race([
         streamFn(
           [
-            { role: 'system', content: system || 'Eres un asistente de programación.' },
+            { role: 'system', content: system },
             { role: 'user', content: test.user },
           ],
           () => { tokens++; },
           model
         ),
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('timeout 45s')), 45_000);
+          setTimeout(() => reject(new Error('timeout 90s')), 90_000);
         }),
       ]);
 
-      const text = response?.trim();
-      if (text && text.length > 3) {
-        record(true, `${test.label} (${model}): ${text.slice(0, 60)}…`);
+      const text = response?.trim() ?? '';
+      const check = test.validate(text);
+      if (text.length > 3 && check.ok) {
+        record(true, `${test.label} (${model}): ${check.detail} — ${text.slice(0, 50)}…`);
+      } else if (text.length > 3) {
+        record(false, `${test.label}: ${check.detail}`);
+        log(`[selfTest] Respuesta agente/chat (300 chars): ${text.slice(0, 300)}`);
       } else {
         record(false, `${test.label}: respuesta vacía`);
       }
@@ -190,7 +250,7 @@ export class ExtensionMonitor {
           this.log('[monitor] ✓ Todo OK — monitor detenido');
           if (!opts.silent) {
             vscode.window.showInformationMessage(
-              `Local Copilot: autotest OK (${lastResult.passed} pruebas). Chat, Profesor y Agente listos.`
+              'Local Copilot: Ollama OK — Chat, Profesor y Agente defienden y crean (ACCION).'
             );
           }
           opts.onComplete?.(lastResult);

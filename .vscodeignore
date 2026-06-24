@@ -15,3 +15,5 @@ tsconfig.json
 ollama-copilot-vscode.zip
 **/.env
 **/.env.*
+stress*.log
+stress-report*.log

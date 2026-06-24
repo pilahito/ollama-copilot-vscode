@@ -3,7 +3,7 @@ import { LOGO_FILE } from './mediaPaths';
 
 /**
  * Panel izquierdo al pulsar el icono de Local Copilot.
- * Muestra branding profesional y abre el chat a la derecha automáticamente.
+ * Branding mínimo; el chat de programación se abre siempre a la derecha.
  */
 export class LocalDockViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'local.dockView';
@@ -114,10 +114,10 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
   <div class="brand-card">
     <div class="logo"><img src="${logoUri}" alt="Local Copilot" /></div>
     <h1>Local Copilot</h1>
-    <p class="tagline">IA local con Ollama<br>Chat · Profesor · Agente</p>
-    <div class="status" id="dock-status">Pulsa el icono para abrir/cerrar el chat</div>
+    <p class="tagline">Ayudante de programación en VS Code<br>Chat · Profesor · Ayudante</p>
+    <div class="status" id="dock-status">Pulsa el icono 😈 para abrir el chat</div>
   </div>
-  <p class="hint">Clic en el icono Local Copilot: abre el chat a la derecha. Vuelve a pulsar para ocultarlo.</p>
+  <p class="hint"><strong>El chat se abre a la derecha</strong> (panel «Chat IA»).<br>Usa <em>Chat</em> para ideas, <em>Profesor</em> para aprender y <em>Ayudante</em> para editar código en tu proyecto.</p>
   <script>
     const vscode = acquireVsCodeApi();
   </script>

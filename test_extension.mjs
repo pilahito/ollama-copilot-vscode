@@ -45,20 +45,17 @@ if (chatSrc.includes('donate-link') || chatSrc.includes('paypalIconUri')) {
   ok('sin icono PayPal en el footer');
 }
 
-section('UI — dock profesional');
-const dockSrc = readFileSync(join(ROOT, 'src/dockViewProvider.ts'), 'utf8');
-if (!dockSrc.includes('Local Copilot') || !dockSrc.includes('LOGO_FILE')) {
-  fail('dock sin branding profesional');
-} else {
-  ok('dock con logo y branding');
-}
-if (dockSrc.includes('Abrir chat')) fail('dock aún tiene botón "Abrir chat"');
-else ok('dock sin menú de botones');
+section('UI — dock demonio + chat derecha');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const mediaPaths = readFileSync(join(ROOT, 'src/mediaPaths.ts'), 'utf8');
+if (!mediaPaths.includes("diablo.jpg")) fail('logo dock debe ser diablo.jpg');
+else ok('logo dock: diablo.jpg');
 if (!pkg.contributes?.viewsContainers?.secondarySidebar) fail('falta secondarySidebar (chat derecha)');
 else ok('chat en panel derecho (secondarySidebar)');
 if (!pkg.contributes?.views?.['localcopilot-chat']) fail('falta vista localcopilot-chat');
 else ok('vista local.chatView en barra derecha');
+if (!pkg.contributes?.views?.localcopilot?.find((v) => v.id === 'local.dockView')) fail('falta dock izquierdo');
+else ok('dock local.dockView en barra izquierda');
 
 section('Chat — inicialización');
 const chatProviderSrc = readFileSync(join(ROOT, 'src/chatViewProvider.ts'), 'utf8');

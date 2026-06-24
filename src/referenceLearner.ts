@@ -5,6 +5,17 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  FUTURISTIC_ANIMAL_WEB_PATTERNS,
+  wantsFuturisticAnimalWeb,
+} from './designProfiles/futuristicWebProfile';
+import {
+  API_INTEGRATION_PATTERNS,
+  GITHUB_REUSE_PATTERNS,
+  PROFESSIONAL_DISCORD_BOT_PATTERNS,
+  wantsNekotinaClone,
+  wantsProfessionalProject,
+} from './designProfiles/professionalCapabilitiesProfile';
 import type { ProjectBlueprint, ProjectKind } from './projectBlueprints';
 import { wantsWorkingImplementation } from './codeQuality';
 
@@ -63,6 +74,8 @@ const BUILTIN_PATTERNS: Partial<Record<ProjectKind | 'generic', string[]>> = {
     'Economía: Map o SQLite en data/economy.js; comandos daily/balance/shop en commands/',
     'Clima: Open-Meteo sin API key en services/weatherApi.js',
     'Moderación: events/ + commands/ban.js con permisos GuildModeration',
+    'Nekotina: /shop /mine /work /profile /pets + meme-api + nekos.best + niveles XP',
+    'Con +Internet: buscar template GitHub stars>100 antes de crear bot desde cero',
   ],
   'minecraft-server': [
     'world/ — mundo generado (en .gitignore, no versionar)',
@@ -99,6 +112,9 @@ const BUILTIN_PATTERNS: Partial<Record<ProjectKind | 'generic', string[]>> = {
   ],
   'web-static': [
     'public/index.html + css/ + js/; fetch a APIs públicas en main.js',
+    'Web animalista futurista: dark mode, canvas-bg.js (partículas), cursor rings, SVG flotantes, glassmorphism neón',
+    'Pilahito: Google Maps contribuidor 117329176880207012989 + iframe Chalet Pilahito Cádiz',
+    'Tipografía Syne/Space Grotesk — NO Nunito verde pastoral para diseño inmersivo',
   ],
   'web-game': [
     'canvas o div grid; game loop en js/game.js; input en js/controls.js',
@@ -126,8 +142,9 @@ export function shouldLearnFromReferences(
   blueprint?: ProjectBlueprint | null
 ): boolean {
   if (blueprint && blueprint.kind !== 'generic') { return true; }
+  if (wantsFuturisticAnimalWeb(prompt)) { return true; }
   return wantsWorkingImplementation(prompt) &&
-    /\b(bot|plugin|mod\b|extensi[oó]n|api|discord|minecraft|telegram|crea|crear|hazme)\b/i.test(prompt);
+    /\b(bot|plugin|mod\b|extensi[oó]n|api|discord|minecraft|telegram|crea|crear|hazme|web|animalista|landing)\b/i.test(prompt);
 }
 
 export function extractKeywords(prompt: string): string[] {
@@ -193,6 +210,10 @@ export function buildSimilarProjectQueries(
       gh('discord.js bot slash commands modular');
       gh('discord bot typescript commands events');
       queries.add('discord.js v14 bot template github README structure');
+      if (/\b(nekotina|mee6|tienda|miner[ií]a|econom[ií]a)\b/i.test(prompt)) {
+        gh('discord bot economy shop mining levels music');
+        queries.add('site:github.com discord bot meme anime nsfw commands');
+      }
       if (features.includes('music')) {
         gh('discord.js music bot voice play-dl');
       }
@@ -490,12 +511,26 @@ export class ReferenceLearner {
     this.saveStore(store);
   }
 
-  private getBuiltinPatterns(blueprint?: ProjectBlueprint | null, features: string[] = []): string[] {
+  private getBuiltinPatterns(
+    blueprint?: ProjectBlueprint | null,
+    features: string[] = [],
+    prompt = ''
+  ): string[] {
     const kind = blueprint?.kind ?? 'generic';
     const base = BUILTIN_PATTERNS[kind] ?? BUILTIN_PATTERNS.generic ?? [];
     const feat = patternsForFeatures(features);
     const hint = blueprint?.hint ? [blueprint.hint.slice(0, 300)] : [];
-    return mergePatterns(base, feat, hint);
+    const futuristic = wantsFuturisticAnimalWeb(prompt) ||
+      (kind === 'web-static' && /\b(animalista|pilahito|futur|webgl|parallax|inmersiv)\b/i.test(prompt))
+      ? FUTURISTIC_ANIMAL_WEB_PATTERNS
+      : [];
+    const professional = wantsProfessionalProject(prompt) || wantsNekotinaClone(prompt) ||
+      kind === 'discord-bot'
+      ? mergePatterns(GITHUB_REUSE_PATTERNS, PROFESSIONAL_DISCORD_BOT_PATTERNS, API_INTEGRATION_PATTERNS)
+      : wantsProfessionalProject(prompt)
+        ? GITHUB_REUSE_PATTERNS
+        : [];
+    return mergePatterns(base, feat, hint, futuristic, professional);
   }
 
   /** +Internet: busca proyectos similares y guarda patrones. */
@@ -547,7 +582,7 @@ export class ReferenceLearner {
   /** Sin internet y sin caché: plantilla local por tipo. */
   getBuiltin(blueprint?: ProjectBlueprint | null, prompt = ''): ReferenceResolveResult | null {
     const features = extractFeatureKeywords(prompt);
-    const patterns = this.getBuiltinPatterns(blueprint, features);
+    const patterns = this.getBuiltinPatterns(blueprint, features, prompt);
     if (!patterns.length) { return null; }
     return {
       context: formatContext([], patterns, 'builtin'),
@@ -566,7 +601,7 @@ export class ReferenceLearner {
   ): ReferenceResolveResult | null {
     const features = extractFeatureKeywords(prompt);
     const cached = this.matchEntry(prompt, blueprint);
-    const builtin = this.getBuiltinPatterns(blueprint, features);
+    const builtin = this.getBuiltinPatterns(blueprint, features, prompt);
 
     if (cached) {
       const patterns = mergePatterns(cached.entry.patterns, builtin);

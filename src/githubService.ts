@@ -22,6 +22,17 @@ export interface GitHubRepo {
   clone_url?: string;
 }
 
+export interface GitHubTemplateRepo {
+  full_name: string;
+  html_url: string;
+  description: string;
+  stars: number;
+  language: string | null;
+  topics: string[];
+  updated_at: string;
+  license: string | null;
+}
+
 export interface GitHubUser {
   login: string;
   name: string | null;
@@ -712,6 +723,96 @@ export class GitHubService {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, message: msg };
     }
+  }
+
+  /** Búsqueda de plantillas open-source en GitHub (ahorra tiempo al crear proyectos). */
+  async searchTemplateRepos(
+    kind: string,
+    prompt: string,
+    limit = 5
+  ): Promise<GitHubTemplateRepo[]> {
+    const queries: Record<string, string> = {
+      'discord-bot': 'discord bot template discord.js economy music stars:>100',
+      'web-static': 'landing page template html css animation stars:>50',
+      'web-game': 'javascript game canvas stars:>50',
+      'web-fullstack': 'fullstack starter template stars:>100',
+      'api-rest': 'express api starter template stars:>50',
+      'minecraft-plugin': 'paper plugin template minecraft stars:>20',
+      'minecraft-mod-fabric': 'fabric mod template minecraft stars:>20',
+      'minecraft-mod-forge': 'forge mod template minecraft stars:>20',
+      'vscode-extension': 'vscode extension template typescript stars:>50',
+    };
+
+    let q = queries[kind] ?? 'starter template';
+    if (/\b(animal|naturaleza|wildlife)\b/i.test(prompt)) {
+      q += ' nature animation';
+    }
+    if (/\b(din[aá]mico|animaci[oó]n)\b/i.test(prompt)) {
+      q += ' animation';
+    }
+    if (/\b(nekotina|mee6|econom[ií]a|tienda\s+animales|miner[ií]a)\b/i.test(prompt)) {
+      q += ' economy levels music moderation';
+    }
+
+    const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=${limit}`;
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'Local-Copilot-VSCode',
+    };
+
+    const session = await this.getSession();
+    if (session) {
+      headers.Authorization = `Bearer ${session.accessToken}`;
+    }
+
+    try {
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) { return []; }
+
+      const data = await res.json() as {
+        items?: Array<{
+          full_name: string;
+          html_url: string;
+          description: string | null;
+          stargazers_count: number;
+          language: string | null;
+          topics?: string[];
+          updated_at: string;
+          license?: { spdx_id?: string } | null;
+        }>;
+      };
+
+      return (data.items ?? []).map((item) => ({
+        full_name: item.full_name,
+        html_url: item.html_url,
+        description: item.description ?? '',
+        stars: item.stargazers_count,
+        language: item.language,
+        topics: item.topics ?? [],
+        updated_at: item.updated_at,
+        license: item.license?.spdx_id ?? null,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  formatTemplatesForPrompt(templates: GitHubTemplateRepo[]): string {
+    if (!templates.length) { return ''; }
+
+    const lines = [
+      '## Plantillas GitHub (referencia — adapta, no copies ciegamente)',
+      '',
+    ];
+    for (const t of templates) {
+      lines.push(`- **${t.full_name}** ⭐${t.stars} · ${t.language ?? '—'}`);
+      if (t.description) { lines.push(`  ${t.description.slice(0, 120)}`); }
+      lines.push(`  ${t.html_url}`);
+      if (t.license) { lines.push(`  Licencia: ${t.license}`); }
+    }
+    lines.push('');
+    lines.push('Inspírate en la estructura de estas plantillas para ahorrar tiempo. Crea código original.');
+    return lines.join('\n');
   }
 
   /** Solo lectura: git status para el agente. */

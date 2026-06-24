@@ -40,6 +40,23 @@ async function suppressCompetingAiChats(log?: (line: string) => void): Promise<v
   }
 }
 
+/** Quita el chat de la barra izquierda si el usuario lo arrastró allí. */
+async function detachChatFromPrimarySidebar(log?: (line: string) => void): Promise<void> {
+  try {
+    await vscode.commands.executeCommand('workbench.view.explorer');
+    await delay(60);
+  } catch {
+    /* */
+  }
+  try {
+    await vscode.commands.executeCommand('workbench.action.closeView', 'local.chatView');
+    log?.('[openCopilotChat] closeView local.chatView (barra izquierda)');
+    await delay(80);
+  } catch {
+    /* */
+  }
+}
+
 /** Muestra la barra lateral secundaria (derecha) donde vive el chat. */
 async function ensureAuxiliaryBarVisible(log?: (line: string) => void): Promise<void> {
   try {
@@ -60,12 +77,35 @@ async function ensureAuxiliaryBarVisible(log?: (line: string) => void): Promise<
   }
 }
 
-/** Enfoca el webview del chat en el panel derecho. */
+/** Mueve el chat al panel derecho si VS Code lo colocó en la barra izquierda. */
+async function ensureChatOnRightPanel(log?: (line: string) => void): Promise<void> {
+  const moveCommands = [
+    'workbench.action.moveViewToAuxiliaryBar',
+    'workbench.action.moveFocusedViewToAuxiliaryBar',
+  ];
+  for (const cmd of moveCommands) {
+    try {
+      await vscode.commands.executeCommand(cmd, 'local.chatView');
+      log?.(`[openCopilotChat] move right: ${cmd}`);
+      await delay(60);
+    } catch {
+      try {
+        await vscode.commands.executeCommand(cmd);
+        log?.(`[openCopilotChat] move right: ${cmd} (sin id)`);
+        await delay(60);
+      } catch {
+        /* siguiente */
+      }
+    }
+  }
+}
+
+/** Enfoca el webview del chat en el panel DERECHO. */
 async function focusChatView(log?: (line: string) => void): Promise<void> {
   const focusCommands = [
-    'local.chatView.focus',
     'workbench.view.extension.localcopilot-chat',
     'workbench.view.localcopilot-chat',
+    'local.chatView.focus',
   ];
 
   for (const cmd of focusCommands) {
@@ -81,7 +121,7 @@ async function focusChatView(log?: (line: string) => void): Promise<void> {
 
 /**
  * Abre el chat en el panel DERECHO (barra lateral secundaria).
- * El icono del dock queda a la izquierda; el chat no ocupa la barra izquierda.
+ * El dock con logo demonio queda a la izquierda.
  */
 export async function openCopilotChat(
   chatProvider: LocalChatViewProvider,
@@ -91,6 +131,7 @@ export async function openCopilotChat(
   openingChat = true;
 
   try {
+    await detachChatFromPrimarySidebar(log);
     await ensureAuxiliaryBarVisible(log);
     await suppressCompetingAiChats(log);
 
@@ -101,16 +142,19 @@ export async function openCopilotChat(
       /* */
     }
 
-    for (let attempt = 0; attempt < 6; attempt++) {
+    await ensureChatOnRightPanel(log);
+
+    for (let attempt = 0; attempt < 4; attempt++) {
       await focusChatView(log);
       await chatProvider.reveal();
-      await delay(100 + attempt * 60);
-      if (await chatProvider.waitUntilReady(2000)) {
+      await delay(80 + attempt * 50);
+      if (await chatProvider.waitUntilReady(2500)) {
         break;
       }
     }
 
     await suppressCompetingAiChats(log);
+    await ensureChatOnRightPanel(log);
     await focusChatView(log);
     await chatProvider.reveal();
 
@@ -161,7 +205,7 @@ export async function toggleCopilotChat(
   await openCopilotChat(chatProvider, log);
 }
 
-/** Clic en icono izquierdo: alterna dock + chat (se oculta al pulsar de nuevo). */
+/** Clic en icono izquierdo: abre dock + chat a la derecha; pulsar de nuevo lo oculta. */
 export async function onActivityBarIconClick(
   chatProvider: LocalChatViewProvider,
   log?: (line: string) => void

@@ -14,21 +14,29 @@ export interface HardwareProfile {
   os: string;
   osLabel: string;
   ramGb: number;
+  vramGb: number | null;
   cores: number;
   gpu: string;
   tier: 'basic' | 'normal' | 'good' | 'powerful';
   recommendations: ModelRecommendation[];
+  ollamaInstallHint: string;
 }
 
-function detectGpu(): string {
+function detectGpu(): { name: string; vramGb: number | null } {
   try {
     const out = execSync(
-      'nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1',
+      'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1',
       { encoding: 'utf8', timeout: 1500 }
     ).trim();
-    if (out && !out.includes('failed')) { return out; }
+    if (out && !out.includes('failed')) {
+      const parts = out.split(',').map((s) => s.trim());
+      const name = parts[0] ?? out;
+      const vramMb = parseInt(parts[1] ?? '', 10);
+      const vramGb = Number.isFinite(vramMb) ? Math.round(vramMb / 1024) : null;
+      return { name, vramGb };
+    }
   } catch { /* sin NVIDIA */ }
-  return 'CPU (sin GPU NVIDIA detectada)';
+  return { name: 'CPU (sin GPU NVIDIA detectada)', vramGb: null };
 }
 
 function osLabel(): { os: string; label: string } {
@@ -106,14 +114,51 @@ export function getHardwareProfile(): HardwareProfile {
   const cores = os.cpus().length;
   const tier  = tierFromRam(ramGb);
 
+  const gpuInfo = detectGpu();
+  const ollamaNote = osId === 'win32'
+    ? 'En Windows: https://ollama.com/download'
+    : 'Linux: curl -fsSL https://ollama.com/install.sh | sh';
+
   cached = {
     os: osId,
     osLabel: label,
     ramGb,
+    vramGb: gpuInfo.vramGb,
     cores,
-    gpu: detectGpu(),
+    gpu: gpuInfo.name,
     tier,
     recommendations: buildRecommendations(tier, osId),
+    ollamaInstallHint: ollamaNote,
   };
   return cached;
+}
+
+/** Consejo de modelo Ollama según hardware y tipo de tarea. */
+export function buildHardwareAdviceBlock(hw: HardwareProfile, prompt: string): string {
+  const heavy = /\b(agente|proyecto\s+completo|plugin|mod\b|bot\s+completo|fullstack|impresionante)\b/i.test(prompt);
+  const lines = [
+    '## Hardware detectado y modelo Ollama recomendado',
+    `- SO: ${hw.osLabel} · RAM: ${hw.ramGb} GB · CPU: ${hw.cores} hilos`,
+    `- GPU: ${hw.gpu}${hw.vramGb ? ` (${hw.vramGb} GB VRAM)` : ''}`,
+    `- Perfil: **${hw.tier}**`,
+  ];
+
+  const top = hw.recommendations.find((r) => r.recommended && !r.name.startsWith('En '));
+  if (top) {
+    lines.push(`- **Modelo recomendado para tu PC:** \`ollama pull ${top.name}\``);
+    lines.push(`  (${top.role} — ${top.ram} RAM, ${top.speed})`);
+  }
+
+  if (hw.ramGb < 12 && heavy) {
+    lines.push('- ⚠️ Con poca RAM, usa modelos 7b o menos para el agente; 14b puede ir lento o fallar.');
+  }
+  if (hw.vramGb !== null && hw.vramGb < 8) {
+    lines.push('- ⚠️ VRAM limitada: prioriza modelos quantizados (q4) y evita 14b+ en GPU.');
+  }
+  if (hw.vramGb !== null && hw.vramGb >= 10 && hw.ramGb >= 16) {
+    lines.push('- ✓ Tu RTX/GPU puede acelerar modelos 7b–14b con Ollama (CUDA).');
+  }
+
+  lines.push(`- Instalar Ollama: ${hw.ollamaInstallHint}`);
+  return lines.join('\n');
 }

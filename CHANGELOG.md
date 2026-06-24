@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.4.7] - 2026-06-24
+
+### Fixed
+- Panel agente: eliminado artefacto `PLANPLANPLAN…` en streaming con reintentos Ollama
+- Streaming del agente solo en panel fijo (sin burbuja duplicada en el chat)
+
+### Added
+- `scripts/backup-to-github.sh` — copia de seguridad automática a GitHub
+- `scripts/install-backup-cron.sh` — cron cada 6 h para publicar mejoras en `origin/main`
+
+## [1.1.0] - 2026-06-23
+
+### Added — Modo Grok (sistema local / SSH)
+- **Modo Grok**: análisis profundo y mejora proactiva del sistema (como Grok)
+- **`local.grokOptimizeSystem`**: optimización autónoma 2–3 h (local o SSH)
+- **`local.sshAnalyzeSystem`**: diagnóstico rápido con snapshot del SO
+- **`local.sshAutoAnalyze`**: al abrir terminal SSH, inicia Grok automáticamente
+- `scripts/ssh-grok-optimize.mjs` — runner autónomo por terminal (sin VS Code)
+- Recolección: OS, disco, RAM, systemd failed, puertos, logs, NVIDIA, Docker
+
+### Settings
+- `local.grokMode` (default true)
+- `local.grokMaxHours` (default 3)
+- `local.sshAutoAnalyze` (default false)
+
+## [1.0.39] - 2026-06-23
+
+### Fixed
+- **RequirementsGatherer**: detecta mejor peticiones detalladas (paper 1.21, React+hero, mod fabric) y no repite preguntas innecesarias
+- `countDetailSignals()` — reconoce stack, versión MC, estilo y features en prompts cortos
+
+### Added
+- Scripts de test: `npm test`, `npm run test:full`, `scripts/test-v1038.mjs`, `scripts/run-all-tests.mjs`
+
+## [1.0.38] - 2026-06-23
+
+### Added
+- **RequirementsGatherer**: antes de crear web, bot Discord, plugin/mod Minecraft o API, hace preguntas (estilo, funciones, stack, versión MC)
+- **npmRegistry**: búsqueda dinámica en registry.npmjs.org (no solo 6 paquetes fijos)
+- **freeApiRegistry**: catálogo amplio de APIs gratis (Open-Meteo, Trivia, Giphy, Fabric/Forge, GSAP…)
+- **GitHub template search**: busca repos populares en GitHub API para ahorrar tiempo
+- **Hardware VRAM**: detecta VRAM NVIDIA y recomienda modelos Ollama compatibles con tu PC
+- **smartContext**: combina npm + APIs + plantillas GitHub + consejo de modelo en Chat/Profesor/Agente
+
 ## [1.0.37] - 2026-06-23
 
 ### Added

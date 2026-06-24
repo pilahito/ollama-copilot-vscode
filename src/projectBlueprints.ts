@@ -2,8 +2,12 @@
  * Plantillas de proyecto con sentido común — el agente crea por capas ordenadas.
  */
 
+import { wantsFuturisticAnimalWeb } from './designProfiles/futuristicWebProfile';
+
 export type ProjectKind =
   | 'discord-bot'
+  | 'whatsapp-bot'
+  | 'telegram-bot'
   | 'web-static'
   | 'web-game'
   | 'web-fullstack'
@@ -76,7 +80,43 @@ export function inferFeatureModules(prompt: string, cmdBase = 'commands/'): Feat
   }
   if (/\b(moderacion|moderación|moderation|admin|ban|kick|warn)\b/i.test(prompt)) {
     folders.push('admin');
-    modules.push('admin/moderation.js', `${cmdBase}ban.js`);
+    modules.push('admin/moderation.js', `${cmdBase}moderation.js`);
+  }
+  if (/\b(econom[ií]a|monedas|balance|daily|trabajo|work|coins?)\b/i.test(prompt)) {
+    folders.push('data');
+    modules.push('services/economyService.js', `${cmdBase}economy.js`, `${cmdBase}daily.js`);
+  }
+  if (/\b(clima|weather|tiempo|meteo)\b/i.test(prompt)) {
+    modules.push('services/weatherService.js', `${cmdBase}weather.js`);
+  }
+  if (/\b(chiste|joke|meme|memes)\b/i.test(prompt)) {
+    modules.push('services/jokeService.js', `${cmdBase}joke.js`, `${cmdBase}memes.js`);
+  }
+  if (/\b(pokemon|pok[eé]mon|pokeapi)\b/i.test(prompt)) {
+    modules.push('services/pokemonService.js', `${cmdBase}pokemon.js`);
+  }
+  if (/\b(nivel|level|xp|rank|experiencia)\b/i.test(prompt)) {
+    modules.push('services/levelsService.js', `${cmdBase}levels.js`);
+  }
+  if (/\b(nekotina|mee6|tienda\s+de\s+animales|miner[ií]a|impresionante|de todo|completo|flipante|todo gratis)\b/i.test(prompt)) {
+    folders.push('commands', 'events', 'services', 'config', 'musica', 'juegos', 'data', 'utils');
+    modules.push(
+      'package.json', 'index.js', '.env.example', 'deploy-commands.js', 'README.md',
+      'config/shop.js', 'config/mines.js', 'config/jobs.js',
+      'utils/db.js',
+      'services/userService.js', 'services/shopService.js', 'services/miningService.js', 'services/jobService.js',
+      'services/economyService.js', 'services/levelsService.js',
+      'services/triviaService.js', 'services/weatherService.js', 'services/jokeService.js', 'services/pokemonService.js',
+      'musica/player.js',
+      'events/ready.js', 'events/interactionCreate.js', 'events/messageCreate.js',
+      `${cmdBase}ping.js`, `${cmdBase}help.js`, `${cmdBase}profile.js`,
+      `${cmdBase}shop.js`, `${cmdBase}mine.js`, `${cmdBase}work.js`,
+      `${cmdBase}pets.js`, `${cmdBase}trivia.js`, `${cmdBase}weather.js`, `${cmdBase}joke.js`,
+      `${cmdBase}pokemon.js`, `${cmdBase}economy.js`, `${cmdBase}daily.js`,
+      `${cmdBase}music.js`, `${cmdBase}radio.js`, `${cmdBase}moderation.js`,
+      `${cmdBase}games.js`, `${cmdBase}levels.js`, `${cmdBase}memes.js`, `${cmdBase}anime.js`, `${cmdBase}nsfw.js`,
+      'scripts/validate.js',
+    );
   }
 
   return {
@@ -87,6 +127,14 @@ export function inferFeatureModules(prompt: string, cmdBase = 'commands/'): Feat
 
 export function wantsDiscordBot(prompt: string): boolean {
   return /\b(bot\s+(?:de\s+)?discord|discord\s+bot|bot\s+discord|discordjs|discord\.js|bot\s+para\s+discord|bot\s+impresionante|bot\s+flipante|bot\s+completo)\b/i.test(prompt);
+}
+
+export function wantsWhatsappBot(prompt: string): boolean {
+  return /\b(whatsapp|whats\s*app|wa\s*bot|bot\s+(?:de\s+)?whatsapp|whatsapp[\s-]?web|baileys)\b/i.test(prompt);
+}
+
+export function wantsTelegramBot(prompt: string): boolean {
+  return /\b(telegram|telegraf|bot\s+(?:de\s+)?telegram|telegram\s+bot)\b/i.test(prompt);
 }
 
 export function wantsWebPage(prompt: string): boolean {
@@ -342,6 +390,70 @@ export function detectBlueprint(
     };
   }
 
+  if (wantsWhatsappBot(userPrompt)) {
+    return {
+      kind: 'whatsapp-bot',
+      label: 'Bot de WhatsApp',
+      folders: ['handlers', 'services', 'config'],
+      modulesToCreate: [
+        'package.json',
+        'index.js',
+        '.env.example',
+        'handlers/messageHandler.js',
+        'handlers/menuHandler.js',
+        'services/sessionStore.js',
+        'README.md',
+      ],
+      filesToModify: [primaryEntry],
+      commands: [
+        { command: 'npm init -y', reason: 'Proyecto Node para WhatsApp' },
+        { command: 'npm install whatsapp-web.js qrcode-terminal dotenv', reason: 'Cliente WhatsApp + QR' },
+      ],
+      planSteps: [
+        '1. npm init + whatsapp-web.js',
+        '2. index.js con QR y sesión',
+        '3. handlers/ para mensajes y menú',
+        '4. .env.example sin secretos hardcodeados',
+      ],
+      summary: 'Bot WhatsApp modular: handlers/ + services/ + menú de opciones.',
+      hint:
+        'OBLIGATORIO: CREAR index.js con Client de whatsapp-web.js, handlers separados, .env.example. ' +
+        'Menú numérico (1, 2, 3) en handlers/menuHandler.js. COMANDO npm install al inicio.',
+    };
+  }
+
+  if (wantsTelegramBot(userPrompt)) {
+    return {
+      kind: 'telegram-bot',
+      label: 'Bot de Telegram',
+      folders: ['commands', 'handlers', 'services'],
+      modulesToCreate: [
+        'package.json',
+        'index.js',
+        '.env.example',
+        'commands/start.js',
+        'commands/help.js',
+        'handlers/textHandler.js',
+        'README.md',
+      ],
+      filesToModify: [primaryEntry],
+      commands: [
+        { command: 'npm init -y', reason: 'Proyecto Node para Telegram' },
+        { command: 'npm install telegraf dotenv', reason: 'Bot Telegram' },
+      ],
+      planSteps: [
+        '1. npm init + telegraf',
+        '2. commands/ con /start y /help',
+        '3. handlers/ para mensajes y teclados inline',
+        '4. .env.example (BOT_TOKEN=)',
+      ],
+      summary: 'Bot Telegram con telegraf: commands/ + handlers/ modulares.',
+      hint:
+        'OBLIGATORIO: CREAR index.js con Telegraf, commands/start.js, .env.example. ' +
+        'Teclados inline en handlers/. COMANDO npm install telegraf dotenv.',
+    };
+  }
+
   if (isDiscord) {
     const features = inferFeatureModules(userPrompt, cmdBase);
     const modules = [
@@ -439,31 +551,41 @@ export function detectBlueprint(
   }
 
   if (wantsWebPage(userPrompt) && !wantsGame(userPrompt)) {
+    const futuristic = wantsFuturisticAnimalWeb(userPrompt);
     const folders = ['public', 'public/css', 'public/js', 'public/assets'];
-    const modules = [
-      'public/index.html',
-      'public/css/styles.css',
-      'public/js/main.js',
-    ];
+    const modules = futuristic
+      ? ['public/index.html', 'public/css/styles.css', 'public/js/canvas-bg.js', 'public/js/main.js']
+      : ['public/index.html', 'public/css/styles.css', 'public/js/main.js'];
     return {
       kind: 'web-static',
-      label: 'Página web',
+      label: futuristic ? 'Web animalista futurista' : 'Página web',
       folders,
       modulesToCreate: modules,
       filesToModify: [],
       commands: [],
-      planSteps: [
-        '1. Estructura public/ css/ js/ assets/',
-        '2. index.html semántico y enlaces',
-        '3. CSS en styles.css (no inline masivo)',
-        '4. JS en main.js (interactividad)',
-      ],
-      summary:
-        'Web estática organizada: public/index.html + public/css/styles.css + public/js/main.js. ' +
-        'HTML estructura, CSS presentación, JS comportamiento — archivos separados.',
-      hint:
-        'OBLIGATORIO web: CREAR public/index.html + public/css/styles.css + public/js/main.js. ' +
-        'Diseño responsive básico. Sin meter todo el CSS/JS dentro del HTML.',
+      planSteps: futuristic
+        ? [
+            '1. Estructura public/ css/ js/ con canvas-bg.js separado',
+            '2. index.html dark mode + canvas + cursor rings + SVG animales',
+            '3. styles.css glassmorphism neón + responsive',
+            '4. canvas-bg.js partículas/parallax + main.js cursor/scroll',
+          ]
+        : [
+            '1. Estructura public/ css/ js/ assets/',
+            '2. index.html semántico y enlaces',
+            '3. CSS en styles.css (no inline masivo)',
+            '4. JS en main.js (interactividad)',
+          ],
+      summary: futuristic
+        ? 'Web cyber-orgánica: canvas animado, parallax, neón, glassmorphism. ' +
+          'public/index.html + styles.css + canvas-bg.js + main.js. Pilahito + Google Maps.'
+        : 'Web estática organizada: public/index.html + public/css/styles.css + public/js/main.js. ' +
+          'HTML estructura, CSS presentación, JS comportamiento — archivos separados.',
+      hint: futuristic
+        ? 'OBLIGATORIO web futurista: dark mode, canvas-bg.js, cursor rings, SVG flotantes, neón cyan/verde. ' +
+          'Syne/Space Grotesk. Google Maps contribuidor 117329176880207012989. NO Nunito verde pastoral.'
+        : 'OBLIGATORIO web: CREAR public/index.html + public/css/styles.css + public/js/main.js. ' +
+          'Diseño responsive básico. Sin meter todo el CSS/JS dentro del HTML.',
     };
   }
 

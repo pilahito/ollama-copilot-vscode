@@ -60,23 +60,42 @@ const SYSTEM =
   'Eres Local Agent en MODO AGENTE. PROGRAMAS emitiendo bloques ACCION.\n' +
   'PROHIBIDO .gitkeep — crea archivos .js con código real.\n' +
   'Bot Discord modular: commands/, events/, musica/, juegos/, index.js solo cablea.\n' +
-  'FORMATO:\n' +
+  'FORMATO OBLIGATORIO (sin bloques ```markdown):\n' +
   'PLAN:\n...\n\nEXPLICACION:\n...\n\n' +
-  'ACCION: CREAR | RUTA: commands/ping.js | MOTIVO: ...\n<<CONTENIDO>>\n...\n<<FIN>>\n' +
+  'ACCION: CREAR | RUTA: commands/ping.js | MOTIVO: ...\n<<CONTENIDO>>\n<código JS aquí>\n<<FIN>>\n' +
   'COMANDO: npm install discord.js dotenv | MOTIVO: deps\n<<FIN>>\n' +
-  'PROHIBIDO decir "copia este código".';
+  'PROHIBIDO usar ```javascript — SOLO <<CONTENIDO>> ... <<FIN>>.\n' +
+  'PROHIBIDO decir "copia este código". Emite MÍNIMO 6 ACCION CREAR.';
 
 function parseActions(raw) {
   const actions = [];
-  const re = /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<CONTENIDO>>([\s\S]*?)<<FIN>>/gi;
-  let m;
-  while ((m = re.exec(raw)) !== null) {
+  const seen = new Set();
+
+  const push = (type, path, content, reason) => {
+    const p = path.trim();
+    if (!p || seen.has(p)) return;
+    seen.add(p);
     actions.push({
-      type: m[1].toLowerCase(),
-      path: m[2].trim(),
-      content: m[4].replace(/^\n/, '').replace(/\n$/, ''),
-      reason: m[3].trim(),
+      type: type.toLowerCase(),
+      path: p,
+      content: (content || '').replace(/^\n/, '').replace(/\n$/, ''),
+      reason: (reason || '').trim(),
     });
+  };
+
+  const patterns = [
+    /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n<<CONTENIDO>>([\s\S]*?)<<FIN>>/gi,
+    /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n```(?:javascript|js|typescript|ts)?\n([\s\S]*?)```/gi,
+    /ACCION:\s*(CREAR|MODIFICAR|ELIMINAR)\s*\|\s*RUTA:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n([\s\S]*?)(?=ACCION:|COMANDO:|$)/gi,
+  ];
+
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+      const content = m[4] || '';
+      if (content.includes('<<CONTENIDO>>') || content.length < 20) continue;
+      push(m[1], m[2], content, m[3]);
+    }
   }
   return actions;
 }
@@ -136,17 +155,18 @@ const t0 = Date.now();
 
 let best = { actions: [], raw: '', score: 0, checks: {} };
 
-for (let attempt = 0; attempt < 2; attempt++) {
+for (let attempt = 0; attempt < 3; attempt++) {
   const messages = [
     { role: 'system', content: SYSTEM },
     { role: 'user', content: enriched },
   ];
-  if (attempt === 1) {
+  if (attempt >= 1) {
     messages.push({
       role: 'user',
       content:
-        'CORRECCIÓN: emite mínimo 4 ACCION CREAR: commands/ping.js, events/ready.js, musica/player.js, index.js. ' +
-        'Sin .gitkeep. Código completo con discord.js.',
+        `CORRECCIÓN (intento ${attempt + 1}): emite MÍNIMO 6 ACCION CREAR con <<CONTENIDO>> completo:\n` +
+        'commands/ping.js, commands/help.js, events/ready.js, events/interactionCreate.js, musica/player.js, index.js\n' +
+        'Sin .gitkeep. discord.js v14 + dotenv. index.js solo cablea módulos.',
     });
   }
 
@@ -177,7 +197,8 @@ for (let attempt = 0; attempt < 2; attempt++) {
   if (score > best.score) {
     best = { actions, raw, score, checks };
   }
-  if (score >= 75 && actions.length >= 3) break;
+  if (score >= 75 && actions.length >= 4) break;
+  if (attempt < 2) info('Reintentando con corrección más estricta...');
 }
 
 console.log('\n── Resultados ──');

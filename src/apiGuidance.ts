@@ -99,11 +99,42 @@ const FEATURE_APIS: { re: RegExp; apis: ApiRecommendation[] }[] = [
     re: /\b(meme|chiste|joke|humor)\b/i,
     apis: [
       {
+        name: 'meme-api.com',
+        role: 'Memes aleatorios (sin key)',
+        docs: 'https://meme-api.com/gimme',
+        free: true,
+        note: 'GET https://meme-api.com/gimme — ideal para commands/memes.js',
+      },
+      {
         name: 'JokeAPI',
         role: 'Chistes por HTTP',
         docs: 'https://v2.jokeapi.dev/',
         free: true,
         note: 'GET https://v2.jokeapi.dev/joke/Any — sin key.',
+      },
+    ],
+  },
+  {
+    re: /\b(anime|neko|waifu)\b/i,
+    apis: [
+      {
+        name: 'nekos.best',
+        role: 'Imágenes anime SFW gratis',
+        docs: 'https://nekos.best/api/docs',
+        free: true,
+        note: 'GET https://nekos.best/api/v2/{categoria} — User-Agent recomendado.',
+      },
+    ],
+  },
+  {
+    re: /\b(nsfw|\+18|adulto)\b/i,
+    apis: [
+      {
+        name: 'nekobot.xyz',
+        role: 'Imágenes NSFW (solo canales marcados +18)',
+        docs: 'https://nekobot.xyz/api',
+        free: true,
+        note: 'Verificar interaction.channel.nsfw === true antes de responder.',
       },
     ],
   },
@@ -115,6 +146,12 @@ const FEATURE_APIS: { re: RegExp; apis: ApiRecommendation[] }[] = [
         role: 'GIFs (key gratis en developers.giphy.com)',
         docs: 'https://developers.giphy.com/docs/api',
         envVars: ['GIPHY_API_KEY'],
+        free: true,
+      },
+      {
+        name: 'meme-api.com',
+        role: 'Memes sin API key',
+        docs: 'https://meme-api.com/gimme',
         free: true,
       },
     ],
@@ -272,6 +309,14 @@ export function detectApiRecommendations(
       free: true,
       note: 'Para datos en vivo usa APIs gratuitas (Open-Meteo, REST Countries, etc.).',
     });
+    if (/\b(animalista|futur|webgl|parallax|inmersiv|pilahito)\b/i.test(prompt)) {
+      apis.push({
+        name: 'Canvas 2D + CSS (web inmersiva)',
+        role: 'Fondo animado cyber-orgánico sin dependencias pesadas',
+        free: true,
+        note: 'canvas-bg.js con partículas y parallax; Three.js solo si el usuario lo pide explícitamente.',
+      });
+    }
   }
 
   for (const { re, apis: featureApis } of FEATURE_APIS) {

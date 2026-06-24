@@ -110,7 +110,21 @@ async function main() {
     await screenshot('03-chat-abierto');
     info('Ejecutando depuración visual…');
     await runCommandPalette('Local: Depuración visual (webview + captura)');
-    await sleep(300000);
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      if (existsSync(LOG)) {
+        const tail = readFileSync(LOG, 'utf8');
+        if (/Fin depuración: \d+ OK, 0 fallos/.test(tail)) {
+          ok('Depuración terminada (log OK)');
+          break;
+        }
+        if (/Fin depuración:.*[1-9]\d* fallos/.test(tail)) {
+          fail('Depuración con fallos en log');
+          break;
+        }
+      }
+      await sleep(3000);
+    }
     await screenshot('04-depuracion-fin');
   }
 

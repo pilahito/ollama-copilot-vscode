@@ -11,3 +11,7 @@ out/
 *.vsix
 .vscode-test/
 
+# Logs de stress-test y depuración local
+stress-*.log
+*.stress.log
+

@@ -35,9 +35,24 @@ import {
 } from './editorContext';
 import { EXPLAIN_CODE_PROMPT } from './prompts';
 import { enrichUserMessage } from './userIntent';
+import { buildFuturisticWebDesignBlock, wantsFuturisticAnimalWeb } from './designProfiles/futuristicWebProfile';
+import {
+  buildProfessionalCapabilitiesBlock,
+  wantsNekotinaClone,
+  wantsProfessionalProject,
+} from './designProfiles/professionalCapabilitiesProfile';
+import { NEKOTINA_FULL_FILES } from './nekotinaFullBlueprint';
 import { detectBlueprint } from './projectBlueprints';
 import { gatherReferenceContext } from './referenceLearner';
+import {
+  buildClarificationMessage,
+  buildRequirementsBlock,
+  shouldGatherRequirements,
+  type RequirementsSession,
+} from './requirementsGatherer';
+import { gatherSmartContext } from './smartContext';
 import { getEditorActionSpec, type EditorQuickAction } from './editorActions';
+import { pickProjectType, sessionForChoice } from './projectWizard';
 import {
   getEffectivePrompt,
   getEditablePrompts,
@@ -56,6 +71,7 @@ import {
   getUseCaseLabel,
   type UseCaseId,
 } from './modelCatalog';
+import { SshGrokOptimizer, collectSystemSnapshot, buildSshAnalyzePrompt, getSshConfig } from './sshSystemAnalyzer';
 
 // ── Tipos de mensajes Webview ────────────────────────────────────────────────
 
@@ -64,6 +80,7 @@ type ChatMode = 'chat' | 'agent' | 'teacher';
 type WebviewInMessage =
   | { type: 'send'; text: string; mode: ChatMode; includeEditor?: boolean; forceEditor?: boolean }
   | { type: 'quickAction'; action: EditorQuickAction }
+  | { type: 'createProject' }
   | { type: 'checkConnection' }
   | { type: 'setProvider'; provider: string }
   | { type: 'setInternetMode'; useInternet: boolean }
@@ -109,22 +126,90 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   private webviewScriptReady = false;
   private lastModelsRequestMs = 0;
   private sendReceivedForTest = false;
+  private requirementsSession: RequirementsSession | null = null;
+  private readonly github?: GitHubService;
+  private readonly extensionContext?: vscode.ExtensionContext;
+  private static readonly PENDING_AGENT_KEY = 'local.pendingAgentRequest';
   private static readonly MODELS_REQUEST_MIN_MS = 3_000;
   private static readonly MODELS_CACHE_MS = 45_000;
   private static readonly SYNC_TIMEOUT_MS = 12_000;
+
+  /** Panel fijo del agente — se sincroniza entero en cada actualización. */
+  private agentPanel: {
+    active: boolean;
+    steps: string[];
+    code: string;
+    summary: string;
+    startedAt: number;
+  } = { active: false, steps: [], code: '', summary: '', startedAt: 0 };
+  private agentHeartbeat?: ReturnType<typeof setInterval>;
+  private lastLoggedAgentSyncSteps = -1;
+  private agentSyncTimer?: ReturnType<typeof setTimeout>;
+  private agentSyncDirty = false;
+  private static readonly AGENT_SYNC_MS = 180;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     ollama: OllamaClient,
     github?: GitHubService,
-    log?: (line: string) => void
+    log?: (line: string) => void,
+    extensionContext?: vscode.ExtensionContext
   ) {
     this.ollama = ollama;
-    this.agent  = new LocalAgent(ollama, github);
+    this.github  = github;
+    this.agent   = new LocalAgent(ollama, github, (line) => this.postAgentUiLine(line));
+    this.extensionContext = extensionContext;
     if (log) { this.outputLog = log; }
   }
 
   // ── API de VS Code ────────────────────────────────────────────────────────────
+
+  private savePendingAgentRequest(text: string, gen: number): void {
+    void this.extensionContext?.globalState.update(
+      LocalChatViewProvider.PENDING_AGENT_KEY,
+      { text, gen, savedAt: Date.now() }
+    );
+  }
+
+  private clearPendingAgentRequest(): void {
+    void this.extensionContext?.globalState.update(LocalChatViewProvider.PENDING_AGENT_KEY, undefined);
+  }
+
+  private loadPendingAgentRequest(): { text: string; gen: number } | null {
+    const raw = this.extensionContext?.globalState.get<{ text: string; gen: number; savedAt?: number }>(
+      LocalChatViewProvider.PENDING_AGENT_KEY
+    );
+    if (!raw?.text) { return null; }
+    if (raw.savedAt && Date.now() - raw.savedAt > 10 * 60_000) {
+      this.clearPendingAgentRequest();
+      return null;
+    }
+    return { text: raw.text, gen: raw.gen };
+  }
+
+  /** Reintenta la petición del Agente tras abrir carpeta automáticamente. */
+  async resumePendingAgentRequest(): Promise<void> {
+    if (!vscode.workspace.workspaceFolders?.length) { return; }
+    const pending = this.loadPendingAgentRequest();
+    if (!pending) { return; }
+    this.clearPendingAgentRequest();
+    await this.ensureWebviewReady();
+    this.chatGeneration += 1;
+    const gen = this.chatGeneration;
+    this.resetAgentPanel();
+    this.pushAgentPanelStep('📂 Proyecto abierto — continuando automáticamente…');
+    this.post({ type: 'sendAck', gen });
+    this.post({ type: 'responseStart', agentLive: true, resumeSending: true });
+    try {
+      await this.handleAgentMode(pending.text, gen, null);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.finishAgentPanel(`⚠ Error: ${errMsg}`);
+      this.post({ type: 'responseEnd' });
+      this.post({ type: 'response', text: `⚠ Error: ${errMsg}`, done: true, append: true, agentLive: true });
+      this.post({ type: 'agentDone' });
+    }
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
@@ -189,24 +274,67 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       if (message.type === 'cancel') {
         this.cancelActiveGeneration();
       } else if (message.type === 'clearChat') {
-        this.post({ type: 'chatCleared' });
+        const choice = await vscode.window.showWarningMessage(
+          '¿Limpiar toda la conversación del chat?',
+          { modal: true },
+          'Sí, limpiar',
+          'Cancelar'
+        );
+        if (choice === 'Sí, limpiar') {
+          this.clearChat();
+        }
       } else if (message.type === 'testOllama') {
         await this.runOllamaTest();
       } else if (message.type === 'send') {
         const text = message.text?.trim();
         if (!text) { return; }
+        const mode: ChatMode =
+          message.mode === 'agent' || message.mode === 'teacher' ? message.mode : 'chat';
+        this.trace(`[send] mode=${mode} chars=${text.length}`);
         this.sendReceivedForTest = true;
         const gen = ++this.chatGeneration;
+        void this.reveal();
         this.post({ type: 'sendAck', gen });
-        await this.handleUserMessage(
-          text,
-          message.mode,
-          message.includeEditor === true,
-          gen,
-          message.forceEditor === true
-        );
+        if (mode === 'agent') {
+          this.resetAgentPanel();
+          this.pushAgentPanelStep(
+            `📨 Petición: ${text.slice(0, 160)}${text.length > 160 ? '…' : ''}`
+          );
+          this.post({ type: 'responseStart', agentLive: true });
+        }
+        try {
+          await this.handleUserMessage(
+            text,
+            mode,
+            message.includeEditor === true,
+            gen,
+            message.forceEditor === true
+          );
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.finishAgentPanel(`Error: ${errMsg}`);
+          this.postChatReply(
+            this.formatUserError(
+              'No se pudo procesar el mensaje',
+              'Comprueba Ollama (ollama serve) o tu API en ⚙️. Detalle: ' + errMsg
+            )
+          );
+          this.post({ type: 'agentDone' });
+        }
+      } else if (message.type === 'createProject') {
+        try {
+          await this.runProjectCreationWizard();
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.postChatReply(this.formatUserError('No se pudo iniciar el asistente de proyecto', errMsg));
+        }
       } else if (message.type === 'quickAction') {
-        await this.runEditorQuickAction(message.action);
+        try {
+          await this.runEditorQuickAction(message.action);
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          this.postChatReply(this.formatUserError('No se pudo completar la acción', errMsg));
+        }
       } else if (message.type === 'setProvider') {
         const config = vscode.workspace.getConfiguration('local');
         await config.update('provider', message.provider, vscode.ConfigurationTarget.Global);
@@ -238,6 +366,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         this.webviewScriptReady = true;
         this.postInitState();
         this.pushModelsToUi();
+        if (this.agentPanel.active || this.agentPanel.steps.length > 0) {
+          this.syncAgentPanel();
+        }
         void this.syncOllamaModels();
       } else if (message.type === 'getOllamaModels' || message.type === 'checkConnection') {
         const now = Date.now();
@@ -473,6 +604,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       type: 'initState',
       provider: config.get<string>('provider', 'auto'),
       useInternet: config.get<boolean>('useInternet', false),
+      version: this.getExtensionVersion(),
     });
   }
 
@@ -519,10 +651,140 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Muestra el panel de chat en la barra lateral derecha. */
   public async reveal(): Promise<void> {
+    if (this.openChatPanel) {
+      await this.openChatPanel();
+    }
     await this.waitUntilReady();
     if (this.view) {
       await this.view.show?.(true);
     }
+  }
+
+  /** Asegura panel + script del chat antes de enviar progreso del agente. */
+  public async ensureWebviewReady(timeoutMs = 15_000): Promise<boolean> {
+    await this.reveal();
+    const start = Date.now();
+    while ((!this.view || !this.webviewScriptReady) && Date.now() - start < timeoutMs) {
+      await new Promise<void>((r) => setTimeout(r, 100));
+    }
+    if (!this.view || !this.webviewScriptReady) {
+      this.outputLog('[chat] webview no lista — mensajes irán a Output → Local Copilot');
+      return false;
+    }
+    return true;
+  }
+
+  private resetAgentPanel(): void {
+    if (this.agentHeartbeat) {
+      clearInterval(this.agentHeartbeat);
+      this.agentHeartbeat = undefined;
+    }
+    this.agentPanel = { active: true, steps: [], code: '', summary: '', startedAt: Date.now() };
+    this.syncAgentPanel(true);
+    this.agentHeartbeat = setInterval(() => {
+      if (!this.agentPanel.active) { return; }
+      const mins = Math.floor((Date.now() - this.agentPanel.startedAt) / 60_000);
+      this.syncAgentPanel(true);
+      this.post({ type: 'agentPulse', elapsedMin: mins });
+    }, 45_000);
+  }
+
+  private finishAgentPanel(summary: string): void {
+    if (this.agentHeartbeat) {
+      clearInterval(this.agentHeartbeat);
+      this.agentHeartbeat = undefined;
+    }
+    this.agentPanel.active = false;
+    this.agentPanel.summary = summary;
+    this.syncAgentPanel(true);
+  }
+
+  private pushAgentPanelStep(text: string): void {
+    const t = text.trim();
+    if (!t) { return; }
+    this.agentPanel.active = true;
+    this.agentPanel.steps.push(t);
+    if (this.agentPanel.steps.length > 100) {
+      this.agentPanel.steps = this.agentPanel.steps.slice(-80);
+    }
+    this.syncAgentPanel();
+  }
+
+  /** Evita artefactos PLANPLANPLAN… cuando Ollama reinicia el streaming varias veces. */
+  private sanitizeAgentPanelCode(raw: string): string {
+    if (!raw) { return ''; }
+    let s = raw.replace(/(?:PLAN\s*:?\s*){2,}/gi, 'PLAN:\n');
+    const meaningful = s
+      .replace(/\bPLAN\s*:?\s*/gi, '')
+      .replace(/\bEXPLICACION\s*:?\s*/gi, '')
+      .trim();
+    if (!meaningful || meaningful.length < 12) {
+      if (!/\bACCION\s*:/i.test(s) && !/<<CONTENIDO>>/i.test(s)) {
+        return '';
+      }
+    }
+    return s.trim();
+  }
+
+  private clearAgentPanelCode(): void {
+    this.agentPanel.code = '';
+    this.syncAgentPanel(true);
+  }
+
+  private appendAgentPanelCode(token: string): void {
+    if (!token) { return; }
+    this.agentPanel.active = true;
+    this.agentPanel.code += token;
+    if (this.agentPanel.code.length > 60_000) {
+      this.agentPanel.code = this.agentPanel.code.slice(-50_000);
+    }
+    this.syncAgentPanel();
+  }
+
+  private syncAgentPanel(force = false): void {
+    this.agentSyncDirty = true;
+    if (force) {
+      this.flushAgentSync();
+      return;
+    }
+    if (this.agentSyncTimer) { return; }
+    this.agentSyncTimer = setTimeout(() => {
+      this.agentSyncTimer = undefined;
+      this.flushAgentSync();
+    }, LocalChatViewProvider.AGENT_SYNC_MS);
+  }
+
+  private flushAgentSync(): void {
+    if (!this.agentSyncDirty) { return; }
+    this.agentSyncDirty = false;
+    const elapsedMin = this.agentPanel.startedAt
+      ? Math.floor((Date.now() - this.agentPanel.startedAt) / 60_000)
+      : 0;
+    this.post({
+      type: 'agentSync',
+      active: this.agentPanel.active,
+      steps: [...this.agentPanel.steps],
+      code: this.sanitizeAgentPanelCode(this.agentPanel.code),
+      summary: this.agentPanel.summary,
+      elapsedMin,
+    });
+  }
+
+  /** Réplica en el chat lo que el agente escribe en Output → Local Agente. */
+  private postAgentUiLine(line: string): void {
+    const text = line.trim();
+    if (!text) { return; }
+    const icon = text.startsWith('[MODIFY]') ? '✏️'
+      : text.startsWith('[CREATE]') ? '🆕'
+        : text.startsWith('[DELETE]') ? '🗑️'
+          : text.startsWith('[CMD]') ? '▶'
+            : text.startsWith('[AGENTE]') ? '🤖'
+              : '📋';
+    const pretty = text
+      .replace(/^\[(MODIFY|CREATE|DELETE|CMD|AGENTE[^\]]*)\]\s*/i, '')
+      .trim();
+    this.pushAgentPanelStep(`${icon} ${pretty}`);
+    this.post({ type: 'progress', text: `${icon} ${pretty}`, agentLive: true });
   }
 
   public sendExternalPrompt(text: string, mode: ChatMode = 'chat'): void {
@@ -530,33 +792,146 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: 'prefill', text, mode });
   }
 
+  /** Análisis rápido del sistema (local o SSH) — una pasada con el agente. */
+  public async runSshSystemAnalyze(preferSsh = true): Promise<void> {
+    await this.reveal();
+    await this.waitUntilReady(12_000);
+    const ssh = getSshConfig();
+    const gen = ++this.chatGeneration;
+    this.post({ type: 'sendAck', gen });
+    this.post({ type: 'responseStart' });
+    this.post({ type: 'progress', text: '🔬 Recolectando información del sistema…' });
+
+    try {
+      const snapshot = await collectSystemSnapshot(preferSsh && ssh.enabled, (m) => {
+        this.post({ type: 'progress', text: m });
+      });
+      const prompt = buildSshAnalyzePrompt(snapshot);
+      await this.handleAgentMode(prompt, gen, null, { skipShell: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.post({ type: 'response', text: `⚠️ Error: ${msg}`, done: true });
+    }
+  }
+
+  /**
+   * Modo Grok autónomo: analiza y mejora el sistema durante horas (2–3h por defecto).
+   * Local o vía SSH según configuración.
+   */
+  public async runGrokSystemOptimize(preferSsh = true): Promise<void> {
+    await this.reveal();
+    await this.waitUntilReady(12_000);
+    const gen = ++this.chatGeneration;
+    this.post({ type: 'sendAck', gen });
+    this.post({ type: 'responseStart' });
+
+    const optimizer = new SshGrokOptimizer(this.ollama, this.agent, this.outputLog);
+    try {
+      const result = await optimizer.run({
+        preferSsh,
+        onProgress: (msg) => {
+          if (msg.trim()) {
+            this.post({ type: 'progress', text: msg });
+            this.post({ type: 'token', text: msg + '\n' });
+          }
+        },
+      });
+      const footer = result.complete
+        ? '\n\n✅ **Optimización completa**'
+        : `\n\n✓ Finalizado: ${result.rounds} ronda(s)`;
+      this.post({ type: 'response', text: result.summary + footer, done: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.post({ type: 'response', text: `⚠️ Modo Grok: ${msg}`, done: true });
+    }
+  }
+
   private pendingEditorEnrich: ReturnType<typeof enrichMessageWithEditor> | undefined;
+  private pendingTeacherApply = false;
+  private openChatPanel?: () => Promise<void>;
 
-  /** Acción rápida del editor: explicar, generar, arreglar o refactorizar. */
-  public async runEditorQuickAction(action: EditorQuickAction): Promise<void> {
-    const editor = resolveCodeEditor();
-    if (!editor) {
-      vscode.window.showWarningMessage(
-        'Abre un archivo de código en el editor (o selecciona texto) y vuelve a intentarlo.'
-      );
+  /** Abre el chat en el panel derecho (lo configura extension.ts). */
+  public setOpenChatPanel(fn: () => Promise<void>): void {
+    this.openChatPanel = fn;
+  }
+
+  /** Respuesta corta en el chat (libera el botón Enviar y evita UI colgada). */
+  private postChatReply(text: string): void {
+    this.post({ type: 'responseStart' });
+    this.post({ type: 'response', text, done: true });
+  }
+
+  private formatUserError(summary: string, detail?: string): string {
+    return detail ? `**${summary}**\n\n${detail}` : `**${summary}**`;
+  }
+
+  /** Asistente: elige tipo de proyecto y preguntas de funciones. */
+  public async runProjectCreationWizard(): Promise<void> {
+    const choice = await pickProjectType();
+    if (!choice) {
+      this.post({ type: 'generationCancelled' });
       return;
     }
 
-    const spec = getEditorActionSpec(action);
-    if (spec.mode === 'agent' && !vscode.workspace.workspaceFolders?.length) {
-      vscode.window.showWarningMessage(
-        'Refactorizar requiere una carpeta de proyecto abierta (Archivo → Abrir carpeta).'
-      );
-      return;
-    }
-
-    this.pendingEditorEnrich = enrichMessageWithEditor(spec.prompt, spec.attachEditor);
+    const session = sessionForChoice(choice);
     await this.reveal();
     await this.waitUntilReady(8000);
+    this.post({ type: 'setMode', mode: 'chat' });
+
+    if (session) {
+      this.requirementsSession = session;
+      this.post({ type: 'responseStart' });
+      this.post({ type: 'response', text: buildClarificationMessage(session), done: true });
+      return;
+    }
 
     const gen = ++this.chatGeneration;
     this.post({ type: 'sendAck', gen });
-    await this.handleUserMessage(spec.prompt, spec.mode, spec.attachEditor, gen, true);
+    await this.handleUserMessage(choice.seed, 'chat', false, gen, false);
+  }
+
+  /** Acción rápida del editor: explicar, generar, arreglar o refactorizar. */
+  public async runEditorQuickAction(action: EditorQuickAction): Promise<void> {
+    try {
+      const spec = getEditorActionSpec(action);
+      const editor = resolveCodeEditor();
+      const hasCode = !!editor && editor.document.getText().trim().length > 20;
+
+      if (action === 'generate' && !hasCode) {
+        await this.runProjectCreationWizard();
+        return;
+      }
+
+      if (!editor) {
+        if (action === 'explain' || action === 'fix' || action === 'refactor') {
+          await this.reveal();
+          await this.waitUntilReady(8000);
+          this.postChatReply(
+            'Abre un **archivo de código** en el editor (izquierda) y vuelve a pulsar el botón.'
+          );
+          return;
+        }
+        await this.runProjectCreationWizard();
+        return;
+      }
+
+      if (spec.teacherFix) {
+        this.pendingTeacherApply = true;
+      }
+
+      this.pendingEditorEnrich = enrichMessageWithEditor(spec.prompt, spec.attachEditor);
+      await this.reveal();
+      await this.waitUntilReady(8000);
+      this.post({ type: 'setMode', mode: spec.mode });
+
+      const gen = ++this.chatGeneration;
+      this.post({ type: 'sendAck', gen });
+      await this.handleUserMessage(spec.prompt, spec.mode, spec.attachEditor, gen, true);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.outputLog(`[quickAction:${action}] ${errMsg}`);
+      this.postChatReply(this.formatUserError('Error al ejecutar la acción', errMsg));
+    }
   }
 
   /** Explica código del editor (captura ANTES de que el chat robe el foco). */
@@ -567,6 +942,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   /** Limpia el historial del chat en el panel. */
   public clearChat(): void {
     this.cancelActiveGeneration();
+    this.requirementsSession = null;
+    this.clearPendingAgentRequest();
+    if (this.agentHeartbeat) {
+      clearInterval(this.agentHeartbeat);
+      this.agentHeartbeat = undefined;
+    }
+    this.agentPanel = { active: false, steps: [], code: '', summary: '', startedAt: 0 };
+    this.trace('[chat] conversación limpiada');
     this.post({ type: 'chatCleared' });
   }
 
@@ -633,17 +1016,21 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       }
       const gen = ++this.chatGeneration;
       this.post({ type: 'sendAck', gen });
+      const isAgent = mode === 'agent';
+      if (isAgent) {
+        this.resetAgentPanel();
+        this.pushAgentPanelStep(`📨 Test: ${text.slice(0, 120)}${text.length > 120 ? '…' : ''}`);
+        this.post({ type: 'responseStart', agentLive: true });
+      }
       const done = new Promise<void>((resolve) => {
         const check = (): void => {
-          if (events.includes('responseEnd') || events.includes('response')) {
-            resolve();
-          }
+          if (isAgent && events.includes('agentDone')) { resolve(); return; }
+          if (events.includes('responseEnd') || events.includes('response')) { resolve(); }
         };
         const interval = setInterval(() => {
           check();
-          if (events.includes('responseEnd') || events.includes('response')) {
-            clearInterval(interval);
-          }
+          if (isAgent && events.includes('agentDone')) { clearInterval(interval); }
+          else if (events.includes('responseEnd') || events.includes('response')) { clearInterval(interval); }
         }, 200);
         setTimeout(() => { clearInterval(interval); resolve(); }, timeoutMs);
       });
@@ -651,8 +1038,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       await this.handleUserMessage(text, mode, false, gen);
       await done;
 
-      const ok = snippet.trim().length > 3 &&
-        (events.includes('responseEnd') || events.includes('response'));
+      const ok = isAgent
+        ? events.includes('agentDone')
+        : snippet.trim().length > 3 &&
+          (events.includes('responseEnd') || events.includes('response'));
       this.trace(`[pipeline:${mode}] events=${events.join(',')} ok=${ok}`);
       return { ok, events, snippet: snippet.trim().slice(0, 200) };
     } finally {
@@ -660,23 +1049,87 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Muestra un mensaje en el chat (visible para depuración / tests en vivo). */
+  public async injectChatMessage(
+    text: string,
+    role: 'user' | 'ai' = 'ai',
+    style: 'info' | 'ok' | 'fail' = 'info'
+  ): Promise<void> {
+    await this.reveal();
+    await this.waitUntilReady(10_000);
+    this.post({ type: 'chatInject', text, role, style });
+    this.trace(`[chatInject:${style}] ${text.slice(0, 120)}`);
+  }
+
+  /** Línea en el banner de test + log de depuración. */
+  public appendAgentTestLine(line: string, kind: 'info' | 'ok' | 'fail' = 'info'): void {
+    debugLog(`[agent-live:ui] ${line}`);
+    this.post({ type: 'agentTestLine', line, kind });
+  }
+
+  /** Prepara la UI para test agente: pestaña Agente + banner visible. */
+  public async beginAgentLiveTestUi(scenarioCount: number): Promise<void> {
+    await this.reveal();
+    await this.waitUntilReady(15_000);
+    this.post({ type: 'agentTestStart', total: scenarioCount });
+    this.post({ type: 'setMode', mode: 'agent' });
+    await this.injectChatMessage(
+      `🧪 **Test agente en vivo** — ${scenarioCount} escenarios.\n` +
+      'Verás cada petición **escribirse letra a letra** en el input y la respuesta del agente en el panel morado.',
+      'ai',
+      'info'
+    );
+  }
+
+  public endAgentLiveTestUi(summary: string, ok: boolean): void {
+    this.post({ type: 'agentTestEnd' });
+    void this.injectChatMessage(summary, 'ai', ok ? 'ok' : 'fail');
+  }
+
   /** Prueba envío real webview→extensión→Ollama (como si el usuario pulsara Enter). */
   public async testWebviewUserSend(
     text: string,
     mode: ChatMode = 'chat',
-    timeoutMs = 90_000
+    timeoutMs = 90_000,
+    options?: { typing?: boolean; typingMs?: number }
   ): Promise<{ ok: boolean; events: string[]; snippet: string }> {
     const events: string[] = [];
     let snippet = '';
+    let lastProgress = '';
     const origPost = this.post.bind(this);
     const restore = (): void => { this.post = origPost; };
+    const isAgent = mode === 'agent';
 
     this.post = (msg: Record<string, unknown>) => {
       const t = String(msg.type ?? '?');
       events.push(t);
-      if (t === 'token' && typeof msg.text === 'string') snippet += msg.text;
-      if (t === 'response' && typeof msg.text === 'string') snippet = msg.text;
+      if (t === 'token' && typeof msg.text === 'string') { snippet += msg.text; }
+      if (t === 'response' && typeof msg.text === 'string') { snippet = msg.text; }
+      if (t === 'progress' && typeof msg.text === 'string') {
+        lastProgress = msg.text.trim().slice(0, 160);
+        if (isAgent) { this.trace(`[agent-live:progress] ${lastProgress}`); }
+      }
+      if (t === 'agentSync' && isAgent) {
+        const steps = Array.isArray(msg.steps) ? msg.steps.length : 0;
+        const codeLen = typeof msg.code === 'string' ? msg.code.length : 0;
+        this.trace(`[agent-live:sync] steps=${steps} code=${codeLen} active=${!!msg.active}`);
+      }
+      if (t === 'agentDone' && isAgent) {
+        this.trace('[agent-live:ui] agentDone — generación terminada');
+      }
+      if (t === 'codeStreamStart' && isAgent) {
+        this.trace('[agent-live:ui] código en vivo iniciado');
+      }
       origPost(msg);
+    };
+
+    const isComplete = (): boolean => {
+      if (!this.sendReceivedForTest) { return false; }
+      if (isAgent) {
+        return events.includes('agentDone') &&
+          (events.includes('response') || events.includes('progress'));
+      }
+      return events.includes('responseEnd') || events.includes('response');
     };
 
     try {
@@ -685,20 +1138,30 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         return { ok: false, events: ['not-ready'], snippet: '' };
       }
       this.sendReceivedForTest = false;
-      origPost({ type: 'simulateSend', text, mode });
+      this.trace(`[userSend:${mode}] simulateSend → "${text.slice(0, 80)}…" typing=${!!options?.typing}`);
+      origPost({
+        type: 'simulateSend',
+        text,
+        mode,
+        typing: options?.typing ?? (mode === 'agent'),
+        typingMs: options?.typingMs ?? 22,
+      });
 
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        if (this.sendReceivedForTest &&
-            (events.includes('responseEnd') || events.includes('response'))) {
-          break;
-        }
-        await new Promise<void>((r) => setTimeout(r, 250));
+        if (isComplete()) { break; }
+        await new Promise<void>((r) => setTimeout(r, 300));
       }
 
-      const ok = this.sendReceivedForTest && snippet.trim().length > 1 &&
-        (events.includes('responseEnd') || events.includes('response'));
-      this.trace(`[userSend:${mode}] send=${this.sendReceivedForTest} ok=${ok}`);
+      const ok = isComplete() && (isAgent ? events.includes('agentDone') : snippet.trim().length > 1);
+      this.trace(
+        `[userSend:${mode}] send=${this.sendReceivedForTest} ok=${ok} ` +
+        `events=${events.filter((e, i, a) => a.indexOf(e) === i).join(',')}` +
+        (lastProgress ? ` last="${lastProgress.slice(0, 60)}…"` : '')
+      );
+      if (!ok && isAgent) {
+        this.trace(`[userSend:agent] FALLO — revisa panel morado y Output → Local Agente`);
+      }
       return { ok, events, snippet: snippet.trim().slice(0, 200) };
     } finally {
       restore();
@@ -753,6 +1216,47 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     return gen === this.chatGeneration;
   }
 
+  /** Reenvía tokens del agente solo al panel fijo (sin burbuja duplicada en el chat). */
+  private createAgentTokenFlusher(gen: number): {
+    push: (token: string) => void;
+    flush: () => void;
+    resetStream: () => void;
+  } {
+    let pending = '';
+    let tokenTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const flushTokens = (): void => {
+      pending = '';
+      tokenTimer = undefined;
+    };
+
+    return {
+      push: (token: string) => {
+        if (!token || !this.isGenerationActive(gen)) { return; }
+        this.appendAgentPanelCode(token);
+        pending += token;
+        if (!tokenTimer) {
+          tokenTimer = setTimeout(flushTokens, 70);
+        }
+      },
+      flush: () => {
+        if (tokenTimer) {
+          clearTimeout(tokenTimer);
+          tokenTimer = undefined;
+        }
+        flushTokens();
+      },
+      resetStream: () => {
+        if (tokenTimer) {
+          clearTimeout(tokenTimer);
+          tokenTimer = undefined;
+        }
+        pending = '';
+        this.clearAgentPanelCode();
+      },
+    };
+  }
+
   private async runOllamaTest(): Promise<void> {
     try {
       const status = await this.ollama.checkConnection(true);
@@ -782,6 +1286,20 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     gen = this.chatGeneration,
     forceEditor = false
   ): Promise<void> {
+    const hasWorkspace = !!vscode.workspace.workspaceFolders?.length;
+    const reqCheck = shouldGatherRequirements(text, this.requirementsSession, hasWorkspace, { mode });
+
+    if (reqCheck.gather && reqCheck.message) {
+      this.requirementsSession = reqCheck.session;
+      this.post({ type: 'responseStart' });
+      this.post({ type: 'response', text: reqCheck.message, done: true });
+      return;
+    }
+
+    if (reqCheck.session) {
+      this.requirementsSession = reqCheck.session;
+    }
+
     let enriched: ReturnType<typeof enrichMessageWithEditor>;
 
     if (this.pendingEditorEnrich) {
@@ -794,7 +1312,10 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         enriched = { text, attached: false, filePath: '', source: 'none' };
       }
     } else if (mode === 'teacher') {
-      const fixIntent = wantsTeacherFix(text);
+      const fixIntent = wantsTeacherFix(text) || this.pendingTeacherApply;
+      if (this.pendingTeacherApply) {
+        this.pendingTeacherApply = false;
+      }
       enriched = enrichMessageWithEditor(text, fixIntent || needsEditorContext(text));
       if (fixIntent) {
         await this.handleTeacherFixMode(text, enriched, gen);
@@ -815,42 +1336,123 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    if (enriched.attached) {
+    if (enriched.attached && this.isGenerationActive(gen)) {
       this.post({
-        type: 'contextAttached',
-        filePath: enriched.filePath,
-        source: enriched.source,
+        type: 'progress',
+        text: `📎 Usando código de \`${enriched.filePath}\``,
       });
     }
 
-    if (!this.isGenerationActive(gen)) { return; }
-
-    if (mode === 'agent') {
-      await this.handleAgentMode(enriched.text, gen);
+    if (!this.isGenerationActive(gen)) {
+      const cancelMsg = 'Petición cancelada. Pulsa de nuevo **Enviar** cuando quieras continuar.';
+      if (mode === 'agent') {
+        this.pushAgentPanelStep(cancelMsg);
+        this.post({ type: 'response', text: cancelMsg, done: true, agentLive: true });
+        this.post({ type: 'agentDone' });
+      } else {
+        this.post({ type: 'response', text: cancelMsg, done: true });
+      }
       return;
     }
-    await this.handleChatMode(enriched.text, enriched.attached, mode === 'teacher' ? 'teacher' : 'chat', gen);
+
+    const reqBlock = this.requirementsSession?.complete
+      ? buildRequirementsBlock(this.requirementsSession)
+      : '';
+    const promptWithReq = reqBlock ? `${reqBlock}\n\n${enriched.text}` : enriched.text;
+
+    if (mode === 'agent') {
+      await this.handleAgentMode(promptWithReq, gen, this.requirementsSession);
+      if (this.requirementsSession?.complete) {
+        this.requirementsSession = null;
+      }
+      return;
+    }
+    await this.handleChatMode(
+      promptWithReq,
+      enriched.attached,
+      mode === 'teacher' ? 'teacher' : 'chat',
+      gen
+    );
+    if (this.requirementsSession?.complete) {
+      this.requirementsSession = null;
+    }
   }
 
   /**
    * Modo agente: analiza el proyecto y aplica cambios directamente en disco.
    * El agente informa del progreso mediante callbacks en tiempo real.
    */
-  private async handleAgentMode(text: string, gen: number): Promise<void> {
+  private async handleAgentMode(
+    text: string,
+    gen: number,
+    requirementsSession: RequirementsSession | null = null,
+    options?: { skipShell?: boolean }
+  ): Promise<void> {
+    let deferAgentDone = false;
+    let tokenFlusher: ReturnType<LocalChatViewProvider['createAgentTokenFlusher']> | undefined;
+    const agentProgress = (progress: string): void => {
+      this.outputLog(`[agente] ${progress}`);
+      this.pushAgentPanelStep(progress);
+      this.post({ type: 'progress', text: progress, agentLive: true });
+      if (
+        tokenFlusher &&
+        /reintento automático|reescribiendo en el chat|corrigiendo respuesta|Pasada \d+\/\d+ modo generación/i.test(progress)
+      ) {
+        tokenFlusher.resetStream();
+      }
+    };
+
     try {
+      void this.ensureWebviewReady();
+
+      if (!options?.skipShell) {
+        agentProgress('🤖 Agente activado — preparando entorno…');
+      }
+
       if (!vscode.workspace.workspaceFolders?.length) {
+        const autoOpen = vscode.workspace
+          .getConfiguration('local')
+          .get<boolean>('agentAutoOpenFolder', true);
+        if (autoOpen) {
+          this.savePendingAgentRequest(text, gen);
+          agentProgress('📂 Abriendo selector de carpeta — elige tu proyecto y el agente continuará solo…');
+          const folders = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: 'Abrir proyecto',
+            title: 'Local Copilot — Carpeta del proyecto',
+          });
+          if (folders?.[0]) {
+            agentProgress('📂 Abriendo proyecto — el agente continuará tras recargar VS Code…');
+            deferAgentDone = true;
+            await vscode.commands.executeCommand('vscode.openFolder', folders[0], false);
+            return;
+          }
+          this.clearPendingAgentRequest();
+        }
+        const noFolderMsg =
+          '⚠ **Agente necesita un proyecto abierto.**\n\n' +
+          '1. **Archivo → Abrir carpeta** (tu bot, web, etc.)\n' +
+          '2. Pestaña **Agente** y describe qué crear o modificar\n' +
+          '3. El agente escribe archivos en disco automáticamente\n\n' +
+          '_Sin carpeta abierta solo funcionan Chat y Profesor (con archivo en el editor)._';
+        this.finishAgentPanel(noFolderMsg);
+        this.post({ type: 'responseEnd' });
         this.post({
           type: 'response',
-          text:
-            '⚠ **Agente necesita un proyecto abierto.**\n\n' +
-            '1. **Archivo → Abrir carpeta** (tu bot, web, etc.)\n' +
-            '2. Pestaña **Agente** y describe qué crear o modificar\n' +
-            '3. El agente escribe archivos en disco automáticamente\n\n' +
-            '_Sin carpeta abierta solo funcionan Chat y Profesor (con archivo en el editor)._',
+          text: noFolderMsg,
           done: true,
+          append: true,
+          agentLive: true,
         });
         return;
       }
+
+      agentProgress('🔗 Conectando con Ollama…');
+
+      await this.ollama.prefetch(true);
+      await this.ollama.autoSelectBestModels();
 
       let status = await this.ollama.checkConnection(true);
       if (!status.ok) {
@@ -859,24 +1461,31 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         if (installed.length > 0 && (prov === 'auto' || prov === 'ollama')) {
           status = { ok: true, models: installed, provider: prov, effectiveProvider: 'ollama' };
         } else {
+          const offlineMsg = `⚠ **Agente no disponible.** ${status.message ?? 'Comprueba Ollama o configura una API en ⚙️.'}`;
+          this.finishAgentPanel(offlineMsg);
+          this.post({ type: 'responseEnd' });
           this.post({
             type: 'response',
-            text: `⚠ **Agente no disponible.** ${status.message ?? 'Comprueba Ollama o configura una API en ⚙️.'}`,
+            text: offlineMsg,
             done: true,
+            append: true,
+            agentLive: true,
           });
           return;
         }
       }
 
       const agentModel = this.ollama.getModelForTask('agent');
-      this.post({ type: 'responseStart' });
-      this.post({ type: 'progress', text: `🧠 Agente (${agentModel}) programando — la extensión escribe en disco…` });
-      const result = await this.agent.handleRequest(text, (progress) => {
-        if (!this.isGenerationActive(gen)) { return; }
-        this.post({ type: 'progress', text: progress });
-      }, agentModel);
-
-      if (!this.isGenerationActive(gen)) { return; }
+      agentProgress(`🧠 Agente (${agentModel}) — verás el código escribirse aquí en vivo`);
+      tokenFlusher = this.createAgentTokenFlusher(gen);
+      const result = await this.agent.handleRequest(
+        text,
+        agentProgress,
+        agentModel,
+        requirementsSession,
+        (token) => tokenFlusher.push(token)
+      );
+      tokenFlusher.flush();
 
       let summary = `${result.explanation}\n\n`;
 
@@ -915,17 +1524,25 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         const refused = /\b(no puedo|derechos de autor|copyright|lo siento)\b/i.test(result.explanation);
         summary += refused
           ? '_El modelo rechazó modificar código (falso positivo de copyright). Reintenta con: "Modifica directamente los archivos del proyecto" o usa un modelo coder más grande (14b)._'
-          : '_El agente no generó cambios. Sé más específico: "Modifica src/archivo.ts y arregla X" o "publica en GitHub"._';
+          : '_El agente no escribió archivos. Comprueba: **1)** carpeta del proyecto abierta, **2)** modelo agente (`qwen2.5-coder:14b` en ⚙️), **3)** pide algo concreto: "Crea public/index.html con diseño animalista" o "Modifica index.js y añade comando /ping"._';
       }
 
       if (hasWork) {
         summary += '\n_Aplicado por **Ollama** en modo Agente (no asistente externo)._';
       }
 
-      this.post({ type: 'response', text: summary, done: true });
+      this.finishAgentPanel(summary);
+      this.post({ type: 'responseEnd' });
+      this.post({ type: 'response', text: summary, done: true, append: true, agentLive: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      this.post({ type: 'response', text: `⚠ Error: ${message}`, done: true });
+      this.finishAgentPanel(`⚠ Error: ${message}`);
+      this.post({ type: 'responseEnd' });
+      this.post({ type: 'response', text: `⚠ Error: ${message}`, done: true, append: true, agentLive: true });
+    } finally {
+      if (!deferAgentDone) {
+        this.post({ type: 'agentDone' });
+      }
     }
   }
 
@@ -941,7 +1558,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     if (!status.ok) {
       this.post({
         type: 'response',
-        text: `⚠ Profesor no disponible. ${status.message ?? 'Comprueba Ollama.'}`,
+        text: this.formatUserError('Profesor no disponible', status.message ?? 'Ejecuta `ollama serve` o configura una API en ⚙️.'),
         done: true,
       });
       return;
@@ -952,10 +1569,8 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       this.post({
         type: 'response',
         text:
-          '⚠️ **Para corregir, abre el archivo con el error** en el editor izquierdo.\n\n' +
-          '1. Abre el `.js`, `.ts`, `.py`, etc. que falla\n' +
-          '2. (Opcional) Selecciona la parte problemática\n' +
-          '3. Vuelve a Profesor y di: *"esto falla, corrígelo"* o *"arregla el error"*',
+          '**Abre el archivo con el error** en el editor y vuelve a pulsar **Arreglar errores**.\n\n' +
+          'Opcional: selecciona solo la parte problemática antes de enviar.',
         done: true,
       });
       return;
@@ -972,9 +1587,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       const teacherModel = this.ollama.getModelForTask('teacher');
-      this.post({ type: 'responseStart' });
-      this.post({ type: 'progress', text: `🎓 Profesor (${teacherModel}) — diagnostica y corrige…` });
+      this.post({ type: 'responseStart', agentLive: true });
+      this.post({
+        type: 'progress',
+        text: `🎓 Profesor (${teacherModel}) — diagnostica y corrige en vivo…`,
+        agentLive: true,
+      });
 
+      const teacherFlusher = this.createAgentTokenFlusher(gen);
       const result = await this.agent.handleTeacherFix(
         enriched.attached ? enriched.text : text,
         ctx.filePath,
@@ -982,10 +1602,15 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         diags,
         (progress) => {
           if (!this.isGenerationActive(gen)) { return; }
-          this.post({ type: 'progress', text: progress });
+          this.post({ type: 'progress', text: progress, agentLive: true });
+          if (/reintento|reescribiendo/i.test(progress)) {
+            teacherFlusher.resetStream();
+          }
         },
-        teacherModel
+        teacherModel,
+        (token) => teacherFlusher.push(token)
       );
+      teacherFlusher.flush();
 
       if (!this.isGenerationActive(gen)) { return; }
 
@@ -1008,10 +1633,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         summary += '\n\n_Revisa **Problems** (Ctrl+Shift+M) para ver si quedan errores._';
       }
 
-      this.post({ type: 'response', text: summary, done: true });
+      this.post({ type: 'responseEnd' });
+      this.post({ type: 'response', text: summary, done: true, append: true, agentLive: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      this.post({ type: 'response', text: `⚠ Error: ${message}`, done: true });
+      this.post({ type: 'responseEnd' });
+      this.post({ type: 'response', text: `⚠ Error: ${message}`, done: true, append: true, agentLive: true });
     }
   }
 
@@ -1046,11 +1673,12 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
             : status.provider === 'groq'
               ? 'Groq'
               : 'Ollama';
-        this.post({
-          type: 'response',
-          text: `⚠ No se pudo usar ${providerName}. ${status.message ?? 'Revisa ⚙️ APIs o cambia a Auto/Ollama.'}`,
-          done: true,
-        });
+        this.postChatReply(
+          this.formatUserError(
+            'Sin conexión con la IA',
+            status.message ?? `Abre ⚙️ y configura ${providerName}, o ejecuta \`ollama serve\` para usar Ollama local.`
+          )
+        );
         return;
       }
     }
@@ -1095,8 +1723,33 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
             this.post({ type: 'token', text: `${ref.summary}\n\n` });
           }
         }
+
+        const smart = await gatherSmartContext({
+          prompt: text,
+          blueprint,
+          internetEnabled: this.ollama.isInternetEnabled(),
+          github: this.github,
+          hardware: this.ollama.getHardwareProfile(),
+        });
+        if (smart?.block) {
+          referenceContext += `\n\n${smart.block}`;
+          if (this.isGenerationActive(gen)) {
+            this.post({ type: 'token', text: `${smart.summary}\n\n` });
+          }
+        }
       }
 
+      if (wantsFuturisticAnimalWeb(text)) {
+        referenceContext += `\n\n${buildFuturisticWebDesignBlock()}`;
+      }
+      if (wantsProfessionalProject(text)) {
+        referenceContext += `\n\n${buildProfessionalCapabilitiesBlock()}`;
+      }
+      if (wantsNekotinaClone(text)) {
+        referenceContext +=
+          `\n\nReferencia bot Discord completo (${NEKOTINA_FULL_FILES.length} archivos modulares).\n` +
+          `Estructura: commands/, events/, services/, musica/, juegos/ — no monolito en index.js.\n`;
+      }
       userContent = referenceContext + userContent;
       const messages = [
         { role: 'system' as const, content: systemContent },
@@ -1132,7 +1785,9 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       if (streamStarted) {
         this.post({ type: 'responseEnd' });
       }
-      this.post({ type: 'response', text: `⚠ Error de conexión: ${message}`, done: true });
+      this.postChatReply(
+        this.formatUserError('Error de conexión', message + '. Comprueba `ollama serve` o tu API en ⚙️.')
+      );
     }
   }
 
@@ -1312,11 +1967,25 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         this.modelsLoaded = true;
       }
       this.trace(`[webview→] ${t} loading=${loading} models=${count}`);
+    } else if (t === 'agentSync') {
+      const steps = Array.isArray(msg.steps) ? msg.steps.length : 0;
+      const codeLen = typeof msg.code === 'string' ? msg.code.length : 0;
+      const active = !!msg.active;
+      const stepJump = steps !== this.lastLoggedAgentSyncSteps;
+      if (stepJump || !active) {
+        this.lastLoggedAgentSyncSteps = steps;
+        this.trace(`[webview→] agentSync steps=${steps} code=${codeLen} active=${active}`);
+      }
+    } else if (t === 'progress' && msg.agentLive && typeof msg.text === 'string') {
+      this.trace(`[agent-live:progress] ${msg.text.trim().slice(0, 140)}`);
     } else if (t !== 'token' && t !== 'progress') {
       this.trace(`[webview→] ${t}`);
     }
     if (!this.view) {
       this.trace(`[webview→] DESCARTADO (sin vista): ${t}`);
+      if ((t === 'progress' || t === 'response') && typeof msg.text === 'string' && msg.text.trim()) {
+        this.outputLog(`[chat sin UI] ${msg.text.trim().slice(0, 240)}`);
+      }
       return;
     }
     void this.view.webview.postMessage(msg);
@@ -1600,6 +2269,13 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     margin-bottom: 4px;
   }
 
+  .welcome-emoji {
+    font-size: 56px;
+    line-height: 1;
+    margin-bottom: 12px;
+    filter: drop-shadow(0 4px 12px rgba(139, 92, 246, 0.45));
+  }
+
   .welcome h2 {
     font-size: 18px;
     font-weight: 600;
@@ -1610,8 +2286,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   .welcome p {
     font-size: 13px;
     line-height: 1.5;
-    max-width: 280px;
-    margin: 0 auto;
+    max-width: 300px;
+    margin: 0 auto 8px;
+  }
+
+  .welcome-modes {
+    font-size: 12px !important;
+    opacity: 0.9;
+    max-width: 320px !important;
   }
 
   .welcome-tip {
@@ -1710,6 +2392,121 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     font-style: italic;
   }
 
+  .message.ai.agent-live .message-bubble {
+    border-left: 3px solid var(--primary, #8b5cf6);
+    background: rgba(139, 92, 246, 0.06);
+    min-height: 48px;
+  }
+
+  .message.ai.code-stream-live .message-bubble {
+    border: 2px solid var(--primary, #8b5cf6);
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
+    animation: code-stream-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes code-stream-pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(139, 92, 246, 0.25); }
+    50% { box-shadow: 0 0 16px rgba(139, 92, 246, 0.45); }
+  }
+
+  .message.ai.agent-live .message-bubble pre,
+  .message.ai.agent-live .message-bubble code {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .agent-progress-log {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .agent-step {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #9ca3af);
+    padding: 3px 0 3px 10px;
+    border-left: 2px solid var(--primary, #8b5cf6);
+    line-height: 1.35;
+  }
+
+  .agent-stream-wrap {
+    margin-top: 10px;
+    opacity: 0.55;
+    transition: opacity 0.2s ease;
+  }
+
+  .agent-stream-wrap.active {
+    opacity: 1;
+  }
+
+  .agent-stream-mirror {
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    font-size: 12px;
+    line-height: 1.45;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.35));
+    color: var(--vscode-editor-foreground, #f3f4f6);
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(139, 92, 246, 0.5);
+    max-height: 280px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: 6px;
+  }
+
+  .agent-stream-mirror:empty::after,
+  .agent-stream-mirror:last-child::after {
+    content: '';
+  }
+
+  .message.ai.agent-live .agent-stream-mirror::after {
+    content: ' ▋';
+    color: var(--primary, #8b5cf6);
+    animation: agent-cursor 1s step-end infinite;
+  }
+
+  .agent-stream-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary, #8b5cf6);
+    margin-bottom: 6px;
+  }
+
+  .agent-stream-pre {
+    font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
+    font-size: 12px;
+    line-height: 1.45;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.25));
+    color: var(--vscode-editor-foreground, #e5e7eb);
+    padding: 10px 12px;
+    border-radius: 8px;
+    max-height: 360px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    margin: 0;
+  }
+
+  .message.ai.agent-live .agent-stream-pre::after {
+    content: ' ▋';
+    color: var(--primary, #8b5cf6);
+    animation: agent-cursor 1s step-end infinite;
+  }
+
+  .agent-summary {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1));
+  }
+
+  @keyframes agent-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
   .typing-indicator {
     display: flex;
     gap: 4px;
@@ -1735,6 +2532,106 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   /* ═══════════════════════════════════════════════════════════════════════════
      INPUT AREA
   ═══════════════════════════════════════════════════════════════════════════ */
+
+  .agent-test-banner {
+    display: none;
+    margin: 8px 12px 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    font-size: 11px;
+    line-height: 1.45;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  .agent-test-banner.visible { display: block; }
+  .agent-test-banner-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+    color: #60a5fa;
+  }
+  .agent-test-line { opacity: 0.92; margin: 2px 0; }
+  .agent-test-line.fail { color: #f87171; font-weight: 600; }
+  .agent-test-line.ok { color: #34d399; }
+  .agent-test-line.info { color: #93c5fd; }
+  .message.test-fail .message-bubble {
+    border-left: 3px solid var(--danger, #ef4444);
+    background: rgba(239, 68, 68, 0.1);
+  }
+  .message.test-ok .message-bubble {
+    border-left: 3px solid var(--success, #10b981);
+    background: rgba(16, 185, 129, 0.1);
+  }
+  .message.test-info .message-bubble {
+    border-left: 3px solid var(--primary, #8b5cf6);
+    background: rgba(139, 92, 246, 0.08);
+  }
+  #prompt.typing-active {
+    border-color: var(--primary, #8b5cf6);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
+  }
+
+  .agent-live-panel {
+    display: none;
+    margin: 0 12px 8px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 2px solid var(--primary, #8b5cf6);
+    background: rgba(139, 92, 246, 0.08);
+    max-height: 42vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(139, 92, 246, 0.2);
+  }
+
+  .agent-live-panel.visible {
+    display: block;
+  }
+
+  .agent-panel-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--primary, #8b5cf6);
+    margin-bottom: 8px;
+    letter-spacing: 0.03em;
+  }
+
+  .agent-panel-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 8px;
+  }
+
+  .agent-panel-step {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #9ca3af);
+    padding-left: 8px;
+    border-left: 2px solid var(--primary, #8b5cf6);
+    line-height: 1.35;
+  }
+
+  .agent-panel-code {
+    font-family: var(--vscode-editor-font-family, Consolas, monospace);
+    font-size: 11px;
+    line-height: 1.4;
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--vscode-editor-foreground, #e5e7eb);
+    padding: 10px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid rgba(139, 92, 246, 0.4);
+  }
+
+  .agent-panel-summary {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 12px;
+  }
 
   .input-area {
     padding: 16px;
@@ -2565,7 +3462,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     <div class="logo"><img src="${iconUri}" alt="Local Copilot" class="brand-icon" /></div>
     <div class="title-section">
       <div class="title">Local Copilot</div>
-      <div class="subtitle">Experto en todos los lenguajes · IA local</div>
+      <div class="subtitle" id="app-subtitle">Ayudante de programación · v${version}</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center;">
       <button type="button" class="btn-icon" id="btn-recommendations" title="IAs recomendadas para tu PC">😈</button>
@@ -2636,7 +3533,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   </button>
   <button type="button" class="mode-tab" id="mode-agent" data-mode="agent">
     <span class="icon"><img src="${iconUri}" alt="" class="tab-icon-img" /></span>
-    <span>Agente</span>
+    <span>Ayudante</span>
   </button>
 </div>
 
@@ -2644,29 +3541,34 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 <div class="messages" id="messages">
   <div class="welcome" id="welcome">
     <div class="welcome-icon"><img src="${iconUri}" alt="" class="welcome-icon-img" /></div>
-    <h2>¡Hola! Soy Local Copilot</h2>
-    <p>Experto senior en <strong>todos los lenguajes</strong>. Explico, genero, arreglo y programo en modo Agente.</p>
-    <p class="welcome-tip">📁 <strong>Tip:</strong> Siempre organizo por carpetas — <code>radio/</code>, <code>musica/</code>, <code>juegos/</code>, <code>commands/</code>… Un módulo por función, nunca todo en <code>index.js</code>.</p>
+    <h2>Ayudante de programación</h2>
+    <p>Tu asistente de IA dentro de <strong>VS Code</strong>. Tres modos para programar mejor:</p>
+    <p class="welcome-modes"><strong>Chat</strong> — ideas y sugerencias · <strong>Profesor</strong> — aprende el código · <strong>Ayudante</strong> — escribe y modifica archivos</p>
+    <p class="welcome-tip">Abre un archivo, elige una sugerencia o describe qué quieres programar. El panel está a la <strong>derecha</strong>.</p>
     
     <div class="suggestions">
+      <div class="suggestion" data-action="create" title="Elige web, Discord, WhatsApp, API… y funciones">
+        <span class="suggestion-icon">🚀</span>
+        <span>Crear proyecto</span>
+      </div>
+      <div class="suggestion" data-action="generate" title="Genera código en el archivo abierto o elige tipo de proyecto">
+        <span class="suggestion-icon">✨</span>
+        <span>Generar código</span>
+      </div>
       <div class="suggestion" data-action="explain" title="Explica el código del editor abierto">
         <span class="suggestion-icon">📚</span>
         <span>Explicar código</span>
-      </div>
-      <div class="suggestion" data-action="generate" title="Genera código según el archivo o selección">
-        <span class="suggestion-icon">✨</span>
-        <span>Generar código</span>
       </div>
       <div class="suggestion" data-action="fix" title="Corrige errores y escribe el fix en el archivo">
         <span class="suggestion-icon">🔧</span>
         <span>Arreglar errores</span>
       </div>
-      <div class="suggestion" data-action="refactor" title="Mejora la organización sin cambiar la funcionalidad">
+      <div class="suggestion" data-action="refactor" title="Mejora solo el archivo abierto, sin tocar el resto">
         <span class="suggestion-icon">⚡</span>
-        <span>Refactorizar</span>
+        <span>Refactorizar archivo</span>
       </div>
     </div>
-    <button type="button" class="btn-recommend" id="btn-welcome-recommendations">😈 Ver IAs recomendadas para tu PC</button>
+    <button type="button" class="btn-recommend" id="btn-welcome-recommendations">Ver modelos recomendados para tu PC</button>
 
   </div>
 </div>
@@ -2932,6 +3834,20 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </div>
 
+<!-- Banner de test en vivo (visible durante depuración automática) -->
+<div class="agent-test-banner" id="agent-test-banner">
+  <div class="agent-test-banner-title" id="agent-test-title">🧪 Test agente en vivo</div>
+  <div id="agent-test-lines"></div>
+</div>
+
+<!-- PANEL AGENTE FIJO (siempre visible encima del input) -->
+<div class="agent-live-panel" id="agent-live-panel">
+  <div class="agent-panel-title" id="agent-panel-title">😈 Ayudante en vivo</div>
+  <div class="agent-panel-steps" id="agent-live-steps"></div>
+  <pre class="agent-panel-code" id="agent-live-code" style="display:none"></pre>
+  <div class="agent-panel-summary" id="agent-live-summary" style="display:none"></div>
+</div>
+
 <!-- INPUT AREA -->
 <div class="input-area">
   <div class="input-container">
@@ -2976,7 +3892,71 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   const autoHintEl = document.getElementById('auto-hint');
   const statusBadge = document.getElementById('status-badge');
   const statusText = document.getElementById('status-text');
+  const agentLivePanel = document.getElementById('agent-live-panel');
+  const agentLiveSteps = document.getElementById('agent-live-steps');
+  const agentLiveCode = document.getElementById('agent-live-code');
+  const agentLiveSummary = document.getElementById('agent-live-summary');
+  const agentPanelTitle = document.getElementById('agent-panel-title');
   const WEB_PROVIDERS = ['groq', 'cerebras', 'together', 'cohere', 'huggingface', 'gemini', 'openrouter'];
+
+  function sanitizeAgentCode(raw) {
+    if (!raw) return '';
+    let s = String(raw).replace(/(?:PLAN\s*:?\s*){2,}/gi, 'PLAN:\\n');
+    const meaningful = s.replace(/\\bPLAN\\s*:?\\s*/gi, '').replace(/\\bEXPLICACION\\s*:?\\s*/gi, '').trim();
+    if (!meaningful || meaningful.length < 12) {
+      if (!/\\bACCION\\s*:/i.test(s) && !/<<CONTENIDO>>/i.test(s)) return '';
+    }
+    return s.trim();
+  }
+
+  function renderAgentPanel(msg) {
+    if (!agentLivePanel || !agentLiveSteps) return;
+    const steps = msg.steps || [];
+    const code = sanitizeAgentCode(msg.code || '');
+    const summary = msg.summary || '';
+    const active = !!msg.active;
+
+    if (active || steps.length > 0 || code || summary) {
+      agentLivePanel.classList.add('visible');
+      if (welcomeEl) welcomeEl.style.display = 'none';
+    } else {
+      agentLivePanel.classList.remove('visible');
+      return;
+    }
+
+    if (agentPanelTitle) {
+      const mins = msg.elapsedMin || 0;
+      const elapsed = mins > 0 ? ' · ' + mins + ' min' : '';
+      agentPanelTitle.textContent = active
+        ? '😈 Ayudante en vivo — trabajando…' + elapsed
+        : '✅ Agente terminado' + elapsed;
+    }
+
+    agentLiveSteps.innerHTML = steps.map(function(s) {
+      return '<div class="agent-panel-step">' + escapeHtml(String(s)) + '</div>';
+    }).join('');
+
+    if (agentLiveCode) {
+      if (code) {
+        agentLiveCode.style.display = 'block';
+        agentLiveCode.textContent = code;
+        agentLiveCode.scrollTop = agentLiveCode.scrollHeight;
+      } else {
+        agentLiveCode.style.display = 'none';
+      }
+    }
+
+    if (agentLiveSummary) {
+      if (summary) {
+        agentLiveSummary.style.display = 'block';
+        agentLiveSummary.innerHTML = renderMarkdown(summary);
+      } else {
+        agentLiveSummary.style.display = 'none';
+      }
+    }
+
+    agentLivePanel.scrollTop = agentLivePanel.scrollHeight;
+  }
 
   if (!messagesEl || !promptEl) {
     console.error('Local Copilot: no se encontraron elementos del chat (messages/prompt).');
@@ -2984,6 +3964,110 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   let mode = 'chat';
   let currentAiEl = null;
   let streamRaw = '';
+  let agentLiveActive = false;
+  let agentStreamPre = null;
+  let agentStreamMirror = null;
+  let codeStreamEl = null;
+  let codeStreamRaw = '';
+
+  function ensureAgentLiveShell(bubble) {
+    const msgEl = bubble.closest('.message');
+    if (msgEl) msgEl.classList.add('agent-live');
+    let log = bubble.querySelector('.agent-progress-log');
+    if (!log) {
+      log = document.createElement('div');
+      log.className = 'agent-progress-log';
+      bubble.appendChild(log);
+    }
+    let wrap = bubble.querySelector('.agent-stream-wrap');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.className = 'agent-stream-wrap';
+      const label = document.createElement('div');
+      label.className = 'agent-stream-label';
+      label.textContent = '✍️ Código en vivo (Ollama):';
+      agentStreamPre = document.createElement('pre');
+      agentStreamPre.className = 'agent-stream-pre';
+      wrap.appendChild(label);
+      wrap.appendChild(agentStreamPre);
+      bubble.appendChild(wrap);
+    } else if (!agentStreamPre) {
+      agentStreamPre = wrap.querySelector('.agent-stream-pre');
+    }
+    return { log, pre: agentStreamPre };
+  }
+
+  function appendAgentProgress(bubble, text) {
+    const shell = ensureAgentLiveShell(bubble);
+    const step = document.createElement('div');
+    step.className = 'agent-step';
+    step.textContent = text;
+    shell.log.appendChild(step);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function openAgentStreamPanel(bubble) {
+    const shell = ensureAgentLiveShell(bubble);
+    if (!agentStreamMirror) {
+      agentStreamMirror = document.createElement('div');
+      agentStreamMirror.className = 'agent-stream-mirror';
+      agentStreamMirror.textContent = '▋';
+      shell.log.appendChild(agentStreamMirror);
+    }
+    if (shell.pre && !shell.pre.textContent) {
+      shell.pre.textContent = '▋';
+    }
+    const wrap = bubble.querySelector('.agent-stream-wrap');
+    if (wrap) wrap.classList.add('active');
+    if (agentStreamMirror) {
+      agentStreamMirror.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  function startCodeStreamBubble() {
+    if (codeStreamEl) return codeStreamEl;
+    codeStreamEl = addMessage('ai', '');
+    codeStreamRaw = '### ✍️ Ollama escribiendo en vivo\\n\\n';
+    setBubbleMarkdown(codeStreamEl, codeStreamRaw);
+    const msgEl = codeStreamEl.closest('.message');
+    if (msgEl) msgEl.classList.add('code-stream-live');
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return codeStreamEl;
+  }
+
+  function appendCodeStreamToken(text) {
+    if (!text) return;
+    if (agentLivePanel && agentLivePanel.classList.contains('visible')) return;
+    startCodeStreamBubble();
+    codeStreamRaw += text;
+    setBubbleMarkdown(codeStreamEl, codeStreamRaw);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function appendAgentToken(bubble, text) {
+    if (!text) return;
+    const shell = ensureAgentLiveShell(bubble);
+    if (!agentStreamMirror) {
+      agentStreamMirror = document.createElement('div');
+      agentStreamMirror.className = 'agent-stream-mirror';
+      shell.log.appendChild(agentStreamMirror);
+    }
+    agentStreamMirror.textContent += text;
+    if (shell.pre) {
+      if (shell.pre.textContent === '▋') {
+        shell.pre.textContent = text;
+      } else {
+        shell.pre.textContent += text;
+      }
+    }
+    const wrap = bubble.querySelector('.agent-stream-wrap');
+    if (wrap) wrap.classList.add('active');
+    streamRaw += text;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (shell.pre) {
+      shell.pre.scrollTop = shell.pre.scrollHeight;
+    }
+  }
 
   function escapeHtml(s) {
     return s
@@ -3093,7 +4177,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     const hintEl = document.getElementById('hint');
     if (hintEl) {
       hintEl.textContent = m === 'agent'
-        ? '🤖 Agente: programa, gestiona VS Code (⚙️ Agente IDE) e instala extensiones'
+        ? '🤖 Agente: recuadro morado ENCIMA del input + archivos en disco (puede tardar horas)'
         : m === 'teacher'
           ? '🎓 Profesor: enseña y corrige errores del editor (di "esto falla, corrígelo")'
           : '💬 Chat: responde preguntas sin modificar archivos';
@@ -3102,7 +4186,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     const prompt = document.getElementById('prompt');
     if (prompt) {
       prompt.placeholder = m === 'agent'
-        ? 'Ej: instala extensión Python, crea bot Discord, modifica Local Copilot…'
+        ? 'Ej: créame commands/shop.js — verás el código escribirse en vivo aquí…'
         : m === 'teacher'
           ? 'Ej: explícame cómo funciona async/await con ejemplos'
           : 'Pregunta algo sobre tu código...';
@@ -3192,11 +4276,18 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
   function runQuickAction(action) {
     if (isSending) return;
+    if (action === 'create') {
+      startSending();
+      addMessage('user', '🚀 Crear proyecto (web, Discord, WhatsApp…)');
+      addTypingIndicator();
+      vscode.postMessage({ type: 'createProject' });
+      return;
+    }
     const labels = {
       explain: '📚 Explicar código del editor',
-      generate: '✨ Generar código relacionado',
+      generate: '✨ Generar código',
       fix: '🔧 Arreglar errores del código',
-      refactor: '⚡ Refactorizar (mejor organización)',
+      refactor: '⚡ Refactorizar archivo abierto',
     };
     startSending();
     addMessage('user', labels[action] || action);
@@ -3634,9 +4725,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
   if (btnClear) {
     btnClear.addEventListener('click', () => {
-      if (confirm('¿Limpiar toda la conversación?')) {
-        vscode.postMessage({ type: 'clearChat' });
-      }
+      vscode.postMessage({ type: 'clearChat' });
     });
   }
   if (btnTestOllama) {
@@ -3785,6 +4874,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       sendingWatchdog = null;
     }
     removeTypingIndicator();
+    agentLiveActive = false;
+    agentStreamPre = null;
+    agentStreamMirror = null;
+    codeStreamEl = null;
+    codeStreamRaw = '';
     currentAiEl = null;
     streamRaw = '';
     const btn = document.getElementById('send-btn');
@@ -3794,6 +4888,23 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  const CHAT_WATCHDOG_MS = 600000;
+  const AGENT_WATCHDOG_MS = 4 * 60 * 60 * 1000;
+
+  function touchSendingWatchdog() {
+    if (!isSending) return;
+    if (sendingWatchdog) clearTimeout(sendingWatchdog);
+    const ms = mode === 'agent' ? AGENT_WATCHDOG_MS : CHAT_WATCHDOG_MS;
+    sendingWatchdog = setTimeout(() => {
+      if (!isSending) return;
+      finishSending();
+      const msg = mode === 'agent'
+        ? 'Tiempo de espera agotado. Comprueba Ollama (ollama serve) o reinicia VS Code.'
+        : 'Tiempo de espera agotado. Comprueba que Ollama esté en marcha (ollama serve).';
+      addMessage('ai', msg);
+    }, ms);
+  }
+
   function startSending() {
     isSending = true;
     const btn = document.getElementById('send-btn');
@@ -3801,34 +4912,44 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       btn.textContent = '⏹';
       btn.title = 'Detener generación';
     }
-    if (sendingWatchdog) clearTimeout(sendingWatchdog);
-    sendingWatchdog = setTimeout(() => {
-      if (!isSending) return;
-      finishSending();
-      addMessage('ai', '⚠ Tiempo de espera agotado. Comprueba que Ollama esté corriendo (ollama serve) o reinicia VS Code (Reload Window).');
-    }, 300000);
+    touchSendingWatchdog();
   }
 
   function clearChatUi() {
+    removeTypingIndicator();
     if (messagesEl) {
-      messagesEl.innerHTML = '';
+      messagesEl.querySelectorAll('.message').forEach(function(el) { el.remove(); });
       if (welcomeEl) {
-        messagesEl.appendChild(welcomeEl);
         welcomeEl.style.display = 'block';
       }
+    }
+    if (agentLivePanel) agentLivePanel.classList.remove('visible');
+    if (agentLiveSteps) agentLiveSteps.innerHTML = '';
+    if (agentLiveCode) { agentLiveCode.textContent = ''; agentLiveCode.style.display = 'none'; }
+    if (agentLiveSummary) { agentLiveSummary.innerHTML = ''; agentLiveSummary.style.display = 'none'; }
+    if (agentPanelTitle) agentPanelTitle.textContent = '😈 Ayudante en vivo';
+    if (promptEl) {
+      promptEl.value = '';
+      promptEl.style.height = 'auto';
     }
     finishSending();
   }
 
+  function getActiveMode() {
+    const activeTab = document.querySelector('.mode-tab.active');
+    const m = activeTab?.getAttribute('data-mode');
+    if (m === 'agent' || m === 'teacher' || m === 'chat') {
+      mode = m;
+    }
+    return mode;
+  }
+
   function submitPrompt() {
     if (!promptEl || !messagesEl) return;
-    if (isSending) {
-      vscode.postMessage({ type: 'cancel' });
-      finishSending();
-      return;
-    }
+    if (isSending) return;
     const text = promptEl.value.trim();
     if (!text) return;
+    const sendMode = getActiveMode();
     startSending();
 
     addMessage('user', text);
@@ -3836,12 +4957,25 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     promptEl.style.height = 'auto';
     addTypingIndicator();
 
+    if (sendMode === 'agent' && agentLivePanel) {
+      agentLivePanel.classList.add('visible');
+    }
+
     vscode.postMessage({
       type: 'send',
       text,
-      mode,
-      includeEditor: mode === 'chat' && wantsEditorContext(text),
+      mode: sendMode,
+      includeEditor: sendMode === 'chat' && wantsEditorContext(text),
     });
+  }
+
+  function stopGeneration() {
+    if (!isSending) return;
+    vscode.postMessage({ type: 'cancel' });
+    finishSending();
+    if (agentPanelTitle) {
+      agentPanelTitle.textContent = '⏹ Agente detenido por el usuario';
+    }
   }
 
   document.querySelectorAll('.mode-tab').forEach((btn) => {
@@ -3902,11 +5036,17 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   const sendBtn = document.getElementById('send-btn');
-  if (sendBtn) sendBtn.addEventListener('click', submitPrompt);
+  if (sendBtn) {
+    sendBtn.addEventListener('click', () => {
+      if (isSending) stopGeneration();
+      else submitPrompt();
+    });
+  }
   if (promptEl) {
     promptEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        if (isSending) return;
         submitPrompt();
       }
     });
@@ -3921,16 +5061,102 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       case 'simulateSend':
         if (msg.mode) setMode(msg.mode);
         if (msg.text && promptEl) {
-          promptEl.value = msg.text;
-          submitPrompt();
+          if (isSending) finishSending();
+          const fullText = String(msg.text);
+          const sendNow = () => {
+            promptEl.classList.remove('typing-active');
+            promptEl.value = fullText;
+            promptEl.style.height = 'auto';
+            promptEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            submitPrompt();
+          };
+          if (msg.typing && fullText.length > 0) {
+            promptEl.value = '';
+            promptEl.classList.add('typing-active');
+            promptEl.focus();
+            promptEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            if (welcomeEl) welcomeEl.style.display = 'none';
+            let i = 0;
+            const charMs = Math.max(8, msg.typingMs || 22);
+            const typeTick = () => {
+              if (i < fullText.length) {
+                promptEl.value += fullText.charAt(i);
+                i += 1;
+                promptEl.style.height = 'auto';
+                promptEl.scrollTop = promptEl.scrollHeight;
+                messagesEl.scrollTop = messagesEl.scrollHeight;
+                setTimeout(typeTick, charMs);
+              } else {
+                setTimeout(sendNow, 350);
+              }
+            };
+            typeTick();
+          } else {
+            sendNow();
+          }
         }
         break;
+
+      case 'setMode':
+        if (msg.mode) setMode(msg.mode);
+        break;
+
+      case 'chatInject': {
+        if (!msg.text) break;
+        const role = msg.role === 'user' ? 'user' : 'ai';
+        const bubble = addMessage(role, msg.text);
+        const msgEl = bubble?.closest('.message');
+        if (msgEl) {
+          if (msg.style === 'fail') msgEl.classList.add('test-fail');
+          else if (msg.style === 'ok') msgEl.classList.add('test-ok');
+          else msgEl.classList.add('test-info');
+        }
+        break;
+      }
+
+      case 'agentTestStart': {
+        const banner = document.getElementById('agent-test-banner');
+        const title = document.getElementById('agent-test-title');
+        const lines = document.getElementById('agent-test-lines');
+        if (banner) banner.classList.add('visible');
+        if (title && msg.total) {
+          title.textContent = '🧪 Test agente en vivo — ' + msg.total + ' escenarios';
+        }
+        if (lines) lines.innerHTML = '';
+        setMode('agent');
+        if (agentLivePanel) agentLivePanel.classList.add('visible');
+        break;
+      }
+
+      case 'agentTestLine': {
+        const linesEl = document.getElementById('agent-test-lines');
+        const bannerEl = document.getElementById('agent-test-banner');
+        if (bannerEl) bannerEl.classList.add('visible');
+        if (linesEl && msg.line) {
+          const row = document.createElement('div');
+          row.className = 'agent-test-line ' + (msg.kind || 'info');
+          row.textContent = msg.line;
+          linesEl.appendChild(row);
+          linesEl.scrollTop = linesEl.scrollHeight;
+        }
+        break;
+      }
+
+      case 'agentTestEnd': {
+        const bannerEnd = document.getElementById('agent-test-banner');
+        if (bannerEnd) bannerEnd.classList.remove('visible');
+        break;
+      }
 
       case 'initState':
         if (msg.provider && providerEl) providerEl.value = msg.provider;
         if (internetEl) internetEl.value = String(!!msg.useInternet);
         syncInternetControlVisibility(msg.provider || 'auto');
         updateModelRow(msg.provider || 'auto', true);
+        if (msg.version) {
+          const sub = document.getElementById('app-subtitle');
+          if (sub) sub.textContent = 'Ayudante de programación · v' + msg.version;
+        }
         if (autoHintEl && msg.useInternet) {
           autoHintEl.style.display = 'block';
           autoHintEl.textContent = '🌐 +Internet activo: búsqueda web cuando la pregunta lo pide.';
@@ -4039,25 +5265,101 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
       case 'progress':
         removeTypingIndicator();
+        touchSendingWatchdog();
         if (msg.text) {
-          if (currentAiEl) {
+          if (!currentAiEl) {
+            currentAiEl = addMessage('ai', '');
+            if (msg.agentLive) {
+              agentLiveActive = true;
+              const hint = document.createElement('div');
+              hint.className = 'agent-progress-log';
+              hint.innerHTML = '<div class="agent-step">⏳ Agente en marcha…</div>';
+              currentAiEl.appendChild(hint);
+              const msgEl = currentAiEl.closest('.message');
+              if (msgEl) msgEl.classList.add('agent-live');
+            }
+          }
+          if (currentAiEl && (msg.agentLive || agentLiveActive)) {
+            appendAgentProgress(currentAiEl, msg.text);
+          } else if (currentAiEl) {
             streamRaw += (streamRaw ? '\\n\\n' : '') + msg.text;
             setBubbleMarkdown(currentAiEl, streamRaw);
           } else {
             addMessage('progress', msg.text);
           }
         }
-        addTypingIndicator();
+        if (!agentLiveActive && (!streamRaw || streamRaw.length < 20)) {
+          addTypingIndicator();
+        }
         break;
         
       case 'responseStart':
         removeTypingIndicator();
         streamRaw = '';
+        agentLiveActive = !!msg.agentLive;
+        agentStreamPre = null;
+        agentStreamMirror = null;
+        codeStreamEl = null;
+        codeStreamRaw = '';
+        if (msg.resumeSending) {
+          startSending();
+        }
         currentAiEl = addMessage('ai', '');
+        if (agentLiveActive && currentAiEl) {
+          const hint = document.createElement('div');
+          hint.className = 'agent-progress-log';
+          hint.innerHTML = '<div class="agent-step">⏳ Agente iniciado — espera unos segundos…</div>';
+          currentAiEl.appendChild(hint);
+          const msgEl = currentAiEl.closest('.message');
+          if (msgEl) msgEl.classList.add('agent-live');
+        }
+        if (msg.resumeSending && agentLivePanel) {
+          agentLivePanel.classList.add('visible');
+        }
         break;
         
+      case 'agentSync':
+        renderAgentPanel(msg);
+        touchSendingWatchdog();
+        break;
+
+      case 'agentPulse':
+        touchSendingWatchdog();
+        if (agentPanelTitle && msg.elapsedMin != null) {
+          agentPanelTitle.textContent =
+            '😈 Ayudante en vivo · ' + msg.elapsedMin + ' min';
+        }
+        break;
+
+      case 'agentDone':
+        finishSending();
+        break;
+
+      case 'codeStreamStart':
+        if (agentLivePanel) agentLivePanel.classList.add('visible');
+        else startCodeStreamBubble();
+        break;
+
+      case 'agentStreamOpen':
+        startCodeStreamBubble();
+        if (currentAiEl) openAgentStreamPanel(currentAiEl);
+        break;
+
       case 'token':
-        if (currentAiEl) {
+        removeTypingIndicator();
+        touchSendingWatchdog();
+        if (!msg.text) break;
+        if (msg.codeStream) {
+          appendCodeStreamToken(msg.text);
+          break;
+        }
+        if (!currentAiEl) {
+          currentAiEl = addMessage('ai', '');
+          agentLiveActive = !!msg.agentLive;
+        }
+        if (currentAiEl && (msg.agentLive || agentLiveActive)) {
+          appendAgentToken(currentAiEl, msg.text);
+        } else if (currentAiEl) {
           streamRaw += msg.text;
           setBubbleMarkdown(currentAiEl, streamRaw);
           messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -4065,21 +5367,35 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
         break;
         
       case 'responseEnd':
-        finishSending();
+        removeTypingIndicator();
+        if (!agentLiveActive) {
+          finishSending();
+        }
         break;
         
-      case 'response':
-        finishSending();
-        if (msg.text) {
-          if (currentAiEl) {
+      case 'response': {
+        const bubble = currentAiEl;
+        if (msg.append && bubble && (msg.agentLive || agentLiveActive)) {
+          const summary = document.createElement('div');
+          summary.className = 'agent-summary';
+          summary.innerHTML = renderMarkdown(msg.text || '');
+          bubble.appendChild(summary);
+          const msgEl = bubble.closest('.message');
+          if (msgEl) msgEl.classList.remove('agent-live');
+          finishSending();
+        } else if (msg.text) {
+          if (bubble) {
             streamRaw = msg.text;
-            setBubbleMarkdown(currentAiEl, streamRaw);
-            currentAiEl = null;
+            setBubbleMarkdown(bubble, streamRaw);
           } else {
             addMessage('ai', msg.text);
           }
+          finishSending();
+        } else {
+          finishSending();
         }
         break;
+      }
         
       case 'prefill':
         setMode(msg.mode ?? 'chat');

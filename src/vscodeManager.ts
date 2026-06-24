@@ -31,22 +31,37 @@ const SAFE_VSCODE_COMMANDS = new Set([
   'workbench.action.showCommands',
   'workbench.action.openSettings',
   'workbench.action.openWorkspaceSettings',
+  'workbench.action.openGlobalSettings',
   'workbench.action.terminal.new',
+  'workbench.action.terminal.focus',
   'workbench.action.auxiliaryBar.show',
   'workbench.action.focusAuxiliaryBar',
   'workbench.view.explorer',
+  'workbench.view.search',
   'workbench.view.extension.localcopilot-chat',
   'workbench.extensions.action.showInstalledExtensions',
   'workbench.extensions.action.showPopularExtensions',
+  'workbench.action.quickOpen',
+  'workbench.action.files.openFile',
+  'workbench.action.files.openFolder',
+  'workbench.action.closeActiveEditor',
+  'workbench.action.closeFolder',
+  'editor.action.formatDocument',
+  'editor.action.selectAll',
+  'workbench.action.findInFiles',
+  'workbench.action.togglePanel',
+  'workbench.action.toggleSidebarVisibility',
   'local.openChat',
+  'local.openDock',
   'local.runSelfTest',
   'local.godMode',
   'local.debugVisual',
   'local.selectModel',
+  'local.buildNekotina',
 ]);
 
 export function isAgentIdeModeEnabled(): boolean {
-  return vscode.workspace.getConfiguration('local').get<boolean>('agentIdeMode', false);
+  return vscode.workspace.getConfiguration('local').get<boolean>('agentIdeMode', true);
 }
 
 export function isAgentSelfModifyEnabled(): boolean {
@@ -162,6 +177,16 @@ export async function compileAndInstallSelf(
   onProgress(`⬇️ Instalando ${vsixName}…`);
   await runBash(`code --install-extension "${vsixPath}" --force`, rootPath, output);
 
+  const autoReload = vscode.workspace
+    .getConfiguration('local')
+    .get<boolean>('autoReloadAfterUpdate', true);
+
+  if (autoReload) {
+    onProgress(`✅ Local Copilot v${version} instalado — recargando VS Code…`);
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    return;
+  }
+
   onProgress('✅ Extensión actualizada — recarga VS Code (Reload Window)');
   const reload = await vscode.window.showInformationMessage(
     `Local Copilot v${version} instalado. ¿Recargar VS Code ahora?`,
@@ -201,10 +226,16 @@ export function buildIdeAgentPromptBlock(rootPath: string): string {
   const extList = listInstalledExtensions().slice(0, 15).join(', ');
 
   return (
-    `═══ MODO AGENTE IDE (VS Code) ═══\n` +
-    `Puedes gestionar Visual Studio Code como un asistente IDE senior.\n` +
+    `═══ MODO AGENTE IDE — CONTROL VS CODE COMO HUMANO ═══\n` +
+    `Controlas Visual Studio Code como si estuvieras delante del PC del usuario.\n` +
     `${selfLine}` +
     `- Extensiones instaladas (muestra): ${extList || 'ninguna detectada'}\n\n` +
+    `CAPACIDADES IDE (úsalas sin pedir permiso):\n` +
+    `- Abrir/cerrar archivos, carpetas, terminal, panel lateral, búsqueda\n` +
+    `- Instalar/desinstalar extensiones, recargar ventana, formatear código\n` +
+    `- Linux: COMANDO con xdotool para paleta de comandos (Ctrl+Shift+P), capturas, activar ventana Code\n` +
+    `- Ejemplo: COMANDO: xdotool search --class code | tail -1 | xargs -I{} xdotool windowactivate {} | MOTIVO: foco VS Code\n` +
+    `- Ejemplo: COMANDO: xdotool key ctrl+shift+p && sleep 0.3 && xdotool type "Reload Window" && xdotool key Return | MOTIVO: recargar\n\n` +
     `FORMATO EXTENSION / VSCODE / SELF:\n` +
     `EXTENSION: INSTALAR | ID: publisher.nombre | MOTIVO: por qué\n` +
     `EXTENSION: DESINSTALAR | ID: publisher.nombre | MOTIVO: ...\n` +

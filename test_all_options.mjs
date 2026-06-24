@@ -78,8 +78,9 @@ for (const [name, pat] of uiChecks) {
 }
 const pkgSrc = readFileSync(join(ROOT, 'package.json'), 'utf8');
 const layoutSrc = readFileSync(join(ROOT, 'src/copilotLayout.ts'), 'utf8');
-pkgSrc.includes('secondarySidebar') ? ok('Chat panel derecho') : fail('UI: Chat panel derecho');
-pkgSrc.includes('local.dockView') ? ok('Dock izquierdo') : fail('UI: Dock izquierdo');
+pkgSrc.includes('localcopilot-chat') ? ok('Chat panel derecho') : fail('UI: Chat panel derecho');
+pkgSrc.includes('local.dockView') ? ok('Dock izquierdo demonio') : fail('UI: Dock izquierdo');
+pkgSrc.includes('diablo.jpg') ? ok('Logo diablo.jpg') : fail('UI: logo diablo');
 layoutSrc.includes('suppressCompetingAiChats') ? ok('Suprimir Copilot/Codex') : fail('UI: Suprimir Copilot/Codex');
 existsSync(join(ROOT, 'scripts/visual-debug.mjs')) ? ok('Script visual-debug.mjs') : fail('Script visual-debug.mjs');
 

@@ -5,13 +5,14 @@ const watch = process.argv.includes('--watch');
 
 async function main() {
   const ctx = await esbuild.context({
-    entryPoints: ['src/extension.ts'],
+    entryPoints: ['src/extension.ts', 'src/ollamaDefense.ts', 'src/designProfiles/universalExpertProfile.ts'],
     bundle: true,
     format: 'cjs',
     minify: production,
     sourcemap: !production,
     platform: 'node',
-    outfile: 'dist/extension.js',
+    outdir: 'dist',
+    outbase: 'src',
     external: ['vscode'],
     logLevel: 'info'
   });

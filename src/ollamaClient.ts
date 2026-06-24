@@ -26,6 +26,7 @@ import * as http from 'http';
 import { execSync } from 'child_process';
 import * as vscode from 'vscode';
 import { getHardwareProfile, type HardwareProfile } from './hardwareProfile';
+import { searchNpmPackages } from './npmRegistry';
 import {
   findInstalledModel,
   modelInstalled,
@@ -107,8 +108,12 @@ export class OllamaClient {
   private static readonly CONNECTION_CACHE_MS = 10_000;
 
   // ── Timeouts ────────────────────────────────────────────────────────────────
-  private static readonly TIMEOUT_GET_MS  = 8_000;
-  private static readonly TIMEOUT_POST_MS = 30_000;
+  private static readonly TIMEOUT_GET_MS       = 8_000;
+  private static readonly TIMEOUT_POST_MS      = 30_000;
+  /** generateCompletion / pasos previos del agente (14b puede tardar >30s en cargar). */
+  private static readonly TIMEOUT_AGENT_MS     = 300_000;
+  /** Streaming agente: sin límite duro (keep_alive 4h en payload). */
+  private static readonly TIMEOUT_AGENT_STREAM = 4 * 3600_000;
 
   constructor() {
     this.baseUrl = this.getConfig('ollamaUrl', 'http://localhost:11434');
@@ -150,7 +155,9 @@ export class OllamaClient {
       model,
       messages,
       stream: true,
-      keep_alive: this.getConfig('ollamaKeepAlive', '30m'),
+      keep_alive: agent
+        ? (this.getConfig('agentKeepAlive', '4h') as string)
+        : this.getConfig('ollamaKeepAlive', '30m'),
       options: {
         temperature,
         num_ctx: this.getConfig('ollamaNumCtx', 8192),
@@ -685,7 +692,7 @@ export class OllamaClient {
       }
     });
 
-    const result = await this.httpPost('/api/generate', body);
+    const result = await this.httpPost('/api/generate', body, OllamaClient.TIMEOUT_AGENT_MS);
     try {
       return (JSON.parse(result) as { response?: string }).response ?? '';
     } catch {
@@ -820,6 +827,7 @@ export class OllamaClient {
             'Content-Type':   'application/json',
             'Content-Length': Buffer.byteLength(payload),
           },
+          timeout: OllamaClient.TIMEOUT_AGENT_STREAM,
         },
         (res) => {
           let buffer = '';
@@ -849,6 +857,7 @@ export class OllamaClient {
       );
 
       req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout agente (Ollama tardó demasiado)')); });
       req.write(payload);
       req.end();
     });
@@ -1199,7 +1208,7 @@ export class OllamaClient {
   }
 
   /** Petición POST simple (sin streaming) sobre el API de Ollama. */
-  private httpPost(path: string, body: string): Promise<string> {
+  private httpPost(path: string, body: string, timeoutMs = OllamaClient.TIMEOUT_POST_MS): Promise<string> {
     return new Promise((resolve, reject) => {
       const url = new URL(this.getActiveBaseUrl() + path);
       const port = url.port || (url.protocol === 'https:' ? '443' : '80');
@@ -1213,7 +1222,7 @@ export class OllamaClient {
             'Content-Type':   'application/json',
             'Content-Length': Buffer.byteLength(body)
           },
-          timeout: OllamaClient.TIMEOUT_POST_MS
+          timeout: timeoutMs
         },
         (res) => {
           let data = '';
@@ -1350,30 +1359,14 @@ export class OllamaClient {
     }
   }
 
-  /** Documentación npm de paquetes mencionados en la consulta. */
+  /** Documentación npm — búsqueda dinámica en registry.npmjs.org. */
   private async searchNpmDocs(query: string): Promise<{ title: string; url: string; snippet: string }[]> {
-    const q = query.toLowerCase();
-    const packages = ['discord.js', 'express', 'react', 'vue', 'ollama', 'dotenv']
-      .filter((pkg) => {
-        const key = pkg.replace('.', '');
-        return q.includes(pkg) || q.includes(key) ||
-          (pkg === 'discord.js' && /\b(discord|chatbot|bot)\b/.test(q));
-      });
-
-    const results: { title: string; url: string; snippet: string }[] = [];
-    for (const pkg of packages.slice(0, 2)) {
-      try {
-        const res = await fetch(`https://registry.npmjs.org/${pkg}`, { signal: AbortSignal.timeout(6_000) });
-        if (!res.ok) { continue; }
-        const data = await res.json() as { description?: string; homepage?: string };
-        results.push({
-          title: `npm: ${pkg}`,
-          url: data.homepage ?? `https://www.npmjs.com/package/${pkg}`,
-          snippet: data.description ?? `Paquete ${pkg} en npm`,
-        });
-      } catch { /* siguiente */ }
-    }
-    return results;
+    const hits = await searchNpmPackages(query, 4);
+    return hits.map((h) => ({
+      title: `npm: ${h.name}@${h.version}`,
+      url: h.url,
+      snippet: h.description || `Paquete ${h.name}`,
+    }));
   }
 
   /**
