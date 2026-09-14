@@ -15,6 +15,7 @@ let errors = 0;
 
 const ok = (m) => console.log(`  ✅ ${m}`);
 const fail = (m) => { console.log(`  ❌ ${m}`); errors++; };
+const warn = (m) => console.log(`  ⚠️  ${m}`);
 const section = (t) => console.log(`\n── ${t} ──`);
 
 section('Compilación');
@@ -123,7 +124,8 @@ for (const name of [
 ]) {
   const hit = findModel(name);
   if (!hit) {
-    fail(`modelo no instalado: ${name}`);
+    // No es un fallo del código: simplemente ese modelo no está descargado.
+    warn(`modelo no instalado: ${name}`);
     continue;
   }
   try {
@@ -134,11 +136,15 @@ for (const name of [
         model: hit,
         prompt: 'Responde solo: OK',
         stream: false,
-        options: { num_predict: 6, temperature: 0.1 },
+        // Modelos con razonamiento (qwen3, deepseek-r1…): sin esto el
+        // presupuesto de tokens se va en «pensar» y la respuesta llega vacía.
+        think: false,
+        options: { num_predict: 24, temperature: 0.1 },
       }),
     });
     const d = await r.json();
-    if (d.response?.trim()) ok(`${hit}: ${d.response.trim().slice(0, 30)}`);
+    const text = (d.response || d.thinking || '').trim();
+    if (text) ok(`${hit}: ${text.slice(0, 30)}`);
     else fail(`${hit}: sin respuesta (${d.error || 'vacío'})`);
   } catch (e) {
     fail(`${hit}: ${e.message}`);
@@ -162,11 +168,12 @@ async function testChatStream(label, model, system, user) {
           { role: 'user', content: user },
         ],
         stream: false,
-        options: { num_predict: 24, temperature: 0.3 },
+        think: false,
+        options: { num_predict: 96, temperature: 0.3 },
       }),
     });
     const d = await r.json();
-    const text = d.message?.content?.trim();
+    const text = (d.message?.content || d.message?.thinking || '').trim();
     if (text) ok(`${label} (${model}): ${text.slice(0, 50)}`);
     else fail(`${label}: sin respuesta (${d.error || 'vacío'})`);
   } catch (e) {

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LOGO_FILE } from './mediaPaths';
+import { getWebviewCsp, getWebviewNonce } from './webviewSecurity';
 
 /**
  * Panel izquierdo al pulsar el icono de Local Copilot.
@@ -40,10 +41,14 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this.extensionUri],
     };
 
+    const nonce = getWebviewNonce();
+
     webviewView.webview.html = `<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="${getWebviewCsp(webviewView.webview.cspSource, nonce)}">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -118,14 +123,17 @@ export class LocalDockViewProvider implements vscode.WebviewViewProvider {
     <div class="status" id="dock-status">Pulsa el icono 😈 para abrir el chat</div>
   </div>
   <p class="hint"><strong>El chat se abre a la derecha</strong> (panel «Chat IA»).<br><em>Chat</em> ideas · <em>Profesor</em> aprende · <em>Ayudante</em> escribe archivos, terminal e internet.</p>
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
   </script>
 </body>
 </html>`;
 
-    webviewView.onDidChangeVisibility((visible) => {
-      if (visible) {
+    // onDidChangeVisibility es Event<void>: hay que leer `webviewView.visible`.
+    // Antes se miraba el argumento (undefined) y el dock SIEMPRE se desactivaba,
+    // así que pulsar el icono no abría el chat.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
         this.triggerActivate();
       } else if (this.onDeactivate) {
         void this.onDeactivate();

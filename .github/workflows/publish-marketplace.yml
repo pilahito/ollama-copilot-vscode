@@ -5,6 +5,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -13,7 +16,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -21,12 +25,23 @@ jobs:
       - name: Compile
         run: npm run compile
 
-      - name: Publish extension
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce@2.32.0 package --no-dependencies
+
+      # El .vsix se adjunta siempre a la release: así hay una versión
+      # instalable aunque el Marketplace no esté configurado.
+      - name: Attach VSIX to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" ./*.vsix --clobber
+
+      - name: Publish to VS Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
           if [ -z "$VSCE_PAT" ]; then
-            echo "::error::Falta el secreto VSCE_PAT. Ejecuta: ./scripts/first-publish.sh"
-            exit 1
+            echo "::warning::Sin el secreto VSCE_PAT: se ha publicado el .vsix en la release, pero NO en el Marketplace. Créalo con ./scripts/first-publish.sh"
+            exit 0
           fi
-          npx @vscode/vsce publish --no-dependencies
+          npx --yes @vscode/vsce@2.32.0 publish --no-dependencies

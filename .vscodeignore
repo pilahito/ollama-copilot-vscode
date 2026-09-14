@@ -17,3 +17,8 @@ ollama-copilot-vscode.zip
 **/.env.*
 stress*.log
 stress-report*.log
+
+# Tests y arte fuente: no hacen falta en la extensión instalada
+test_*.mjs
+media/icon-source.jpg
+test_all_options.mjs

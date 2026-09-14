@@ -34,9 +34,11 @@ const COMPLETION_ORDER = [
 
 const CHAT_ORDER = [
   'qwen2.5-coder:14b',
+  'qwen3:14b',
   'local-copilot-turbo',
   'qwen2.5:14b',
   'qwen2.5-coder:7b',
+  'qwen3:8b',
   'mistral:7b',
   'llama3.1:8b',
   'llama3.2',
@@ -46,11 +48,15 @@ const CHAT_ORDER = [
 
 const AGENT_ORDER = [
   'qwen2.5-coder:14b',
+  'qwen3-coder:30b',
+  'qwen3:14b',
   'qwen2.5-coder:7b',
+  'gpt-oss:20b',
   'deepseek-coder:6.7b',
   'codellama:13b',
   'local-copilot-turbo',
   'starcoder2:15b',
+  'qwen3:8b',
   'llama3.1:8b',
   'mistral:7b',
 ];

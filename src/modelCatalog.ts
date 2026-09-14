@@ -29,6 +29,8 @@ export interface ModelCatalogEntry {
   tasks: Partial<Record<TaskAssign, boolean>>;
   minTier: 'basic' | 'normal' | 'good' | 'powerful';
   pullCmd: string;
+  /** Razona antes de responder (`thinking`). Local Copilot lo desactiva por defecto. */
+  reasoning?: boolean;
 }
 
 export const USE_CASES: UseCaseInfo[] = [
@@ -237,6 +239,66 @@ export const MODEL_CATALOG: ModelCatalogEntry[] = [
     tasks: { completion: true, chat: true },
     minTier: 'normal',
     pullCmd: 'ollama pull qwen2.5-coder:3b',
+  },
+  {
+    name: 'qwen3:8b',
+    size: '5.2 GB',
+    ram: '~8–10 GB',
+    speed: '⚡⚡⚡',
+    description: 'Razonador de Alibaba. Piensa antes de contestar: el chat lo muestra igualmente (razonamiento desactivado por defecto).',
+    bestFor: ['programar', 'chat', 'enseñar', 'agente', 'general'],
+    tasks: { chat: true, completion: true, agent: true },
+    minTier: 'normal',
+    pullCmd: 'ollama pull qwen3:8b',
+    reasoning: true,
+  },
+  {
+    name: 'qwen3:14b',
+    size: '9.3 GB',
+    ram: '~16 GB',
+    speed: '⚡⚡',
+    description: 'Razonador potente para código y agente. Alternativa moderna a qwen2.5-coder:14b.',
+    bestFor: ['programar', 'servidor', 'agente', 'enseñar'],
+    tasks: { chat: true, completion: false, agent: true },
+    minTier: 'good',
+    pullCmd: 'ollama pull qwen3:14b',
+    reasoning: true,
+  },
+  {
+    name: 'qwen3-coder:30b',
+    size: '19 GB',
+    ram: '~32 GB',
+    speed: '⚡',
+    description: 'El coder más capaz de la familia Qwen3 para proyectos grandes y agente autónomo.',
+    bestFor: ['programar', 'servidor', 'agente'],
+    tasks: { chat: true, completion: false, agent: true },
+    minTier: 'powerful',
+    pullCmd: 'ollama pull qwen3-coder:30b',
+    reasoning: true,
+  },
+  {
+    name: 'deepseek-r1:8b',
+    size: '5.2 GB',
+    ram: '~10 GB',
+    speed: '⚡⚡',
+    description: 'Razonador de DeepSeek (destilado). Bueno para depurar y explicar código paso a paso.',
+    bestFor: ['programar', 'enseñar', 'chat'],
+    tasks: { chat: true, completion: false, agent: true },
+    minTier: 'normal',
+    pullCmd: 'ollama pull deepseek-r1:8b',
+    reasoning: true,
+  },
+  {
+    name: 'gpt-oss:20b',
+    size: '14 GB',
+    ram: '~24 GB',
+    speed: '⚡⚡',
+    description: 'Modelo abierto de OpenAI con razonamiento. Muy bueno en código y herramientas del agente.',
+    bestFor: ['programar', 'agente', 'servidor'],
+    tasks: { chat: true, completion: false, agent: true },
+    minTier: 'good',
+    pullCmd: 'ollama pull gpt-oss:20b',
+    reasoning: true,
   },
 ];
 

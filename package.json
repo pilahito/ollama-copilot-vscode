@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
   "description": "Asistente de IA en VS Code con tres modos: Chat (ideas y sugerencias), Profesor (aprende el código) y Ayudante/agente (lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build). Autocompletado local con Ollama.",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -577,6 +577,21 @@
           "default": 0.35,
           "description": "Temperatura Ollama para chat (0.2–0.5)."
         },
+        "local.ollamaThink": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "true",
+            "false"
+          ],
+          "enumDescriptions": [
+            "Desactiva el razonamiento solo en modelos que piensan (qwen3, deepseek-r1…). Recomendado.",
+            "Deja que el modelo razone antes de responder (más lento y la respuesta puede tardar).",
+            "Nunca razonar: respuestas directas en todos los modelos."
+          ],
+          "default": "auto",
+          "markdownDescription": "Controla el campo `think` de Ollama. **auto** = sin razonamiento en modelos que piensan (así el chat nunca se queda vacío)."
+        },
         "local.ollamaWarmup": {
           "type": "boolean",
           "default": true,
@@ -637,7 +652,7 @@
   "devDependencies": {
     "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
-    "esbuild": "^0.20.0",
-    "typescript": "^5.3.0"
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3"
   }
 }

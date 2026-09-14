@@ -63,6 +63,7 @@ import {
 } from './promptSettings';
 import { LOGO_FILE } from './mediaPaths';
 import * as fs from 'fs';
+import { getWebviewCsp, getWebviewNonce } from './webviewSecurity';
 import { debugLog } from './debugLog';
 import {
   MODEL_CATALOG,
@@ -245,8 +246,11 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
       noModels: snap.noModels,
     });
 
-    webviewView.onDidChangeVisibility((visible) => {
-      if (visible) {
+    // OJO: onDidChangeVisibility es Event<void>: el listener NO recibe el
+    // booleano, hay que leer `webviewView.visible`. Antes se comprobaba el
+    // argumento (siempre undefined) y el chat no se sincronizaba al abrirse.
+    webviewView.onDidChangeVisibility(() => {
+      if (webviewView.visible) {
         this.postInitState();
         void this.syncOllamaModels();
       }
@@ -2051,11 +2055,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
     const iconUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'media', LOGO_FILE)
     ).toString();
+    const nonce = getWebviewNonce();
     return /* html */ `<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="${getWebviewCsp(webview.cspSource, nonce)}">
+<meta name="color-scheme" content="dark light">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   
@@ -3936,7 +3943,7 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
   </div>
 </div>
 
-<script>
+<script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
   const APP_ICON = ${JSON.stringify(iconUri)};
   const DONATE_URL = ${JSON.stringify(donateUrl.startsWith('http') ? donateUrl : `https://${donateUrl}`)};

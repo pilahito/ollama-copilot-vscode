@@ -38,6 +38,21 @@ import {
 } from './modelRouter';
 import { detectApiRecommendations } from './apiGuidance';
 import type { ProjectBlueprint } from './projectBlueprints';
+
+/**
+ * Modelos que «razonan» (thinking) antes de contestar.
+ *
+ * En estos modelos Ollama devuelve el texto en `message.thinking` y deja
+ * `message.content` VACÍO mientras piensa. Si no se desactiva el razonamiento
+ * o no se lee el campo `thinking`, el chat y el agente parecen «no responder».
+ */
+const REASONING_MODEL_RE =
+  /(qwen3|deepseek-r1|deepseek-r2|deepseek-v3\.[12]|qwq|magistral|gpt-oss|nemotron|reasoning|thinking)/i;
+
+/** ¿El modelo usa cadena de pensamiento antes de responder? */
+export function isReasoningModel(model: string): boolean {
+  return REASONING_MODEL_RE.test(model);
+}
 import { prioritizeGitHubHits } from './referenceLearner';
 
 /** Resultado de la comprobación de conexión con el proveedor activo. */
@@ -160,6 +175,25 @@ export class OllamaClient {
     return this.getConfig<boolean>('agentAutoWebSearch', true);
   }
 
+  /**
+   * Valor del campo `think` de la API de Ollama.
+   *
+   * - `auto` (por defecto): desactiva el razonamiento en modelos que lo usan
+   *   (qwen3, deepseek-r1…), porque el texto se iría a `thinking` y el chat
+   *   se quedaría en blanco. En modelos normales no se envía nada.
+   * - `true` / `false`: se respeta lo que configure el usuario.
+   */
+  private getOllamaThinkValue(model: string): boolean | undefined {
+    const configured = this.getConfig<'auto' | boolean | string>('ollamaThink', 'auto');
+    if (configured === true || configured === 'true') {
+      return true;
+    }
+    if (configured === false || configured === 'false') {
+      return false;
+    }
+    return isReasoningModel(model) ? false : undefined;
+  }
+
   /** Opciones Ollama para chat rápido (menos contexto = menos latencia). */
   private getOllamaChatPayload(model: string, messages: OllamaChatMessage[], agent = false): string {
     const temperature = agent
@@ -168,11 +202,13 @@ export class OllamaClient {
     const numPredict = agent
       ? 12_288
       : this.getConfig('ollamaNumPredict', 4096);
+    const think = this.getOllamaThinkValue(model);
 
     return JSON.stringify({
       model,
       messages,
       stream: true,
+      think,
       keep_alive: agent
         ? (this.getConfig('agentKeepAlive', '4h') as string)
         : this.getConfig('ollamaKeepAlive', '30m'),
@@ -209,6 +245,7 @@ export class OllamaClient {
           model: useModel,
           prompt: 'ok',
           stream: false,
+          think: this.getOllamaThinkValue(useModel),
           keep_alive: this.getConfig('ollamaKeepAlive', '30m'),
           options: { num_predict: 1, num_ctx: 512 },
         })
@@ -706,6 +743,7 @@ export class OllamaClient {
       model:   useModel,
       prompt,
       stream:  false,
+      think:   this.getOllamaThinkValue(useModel),
       options: {
         temperature: 0.2,
         num_predict: 128,
@@ -715,7 +753,9 @@ export class OllamaClient {
 
     const result = await this.httpPost('/api/generate', body, OllamaClient.TIMEOUT_AGENT_MS);
     try {
-      return (JSON.parse(result) as { response?: string }).response ?? '';
+      const data = JSON.parse(result) as { response?: string; thinking?: string };
+      // En modelos con razonamiento el texto puede venir en `thinking`.
+      return (data.response || data.thinking || '').trim();
     } catch {
       return '';
     }
@@ -769,6 +809,7 @@ export class OllamaClient {
       const url     = new URL(`${this.getActiveBaseUrl()}/api/chat`);
       const payload = this.getOllamaChatPayload(useModel, messages, false);
       const port    = url.port || (url.protocol === 'https:' ? '443' : '80');
+      const streamState = { content: '', thinking: '' };
 
       const req = http.request(
         {
@@ -791,20 +832,24 @@ export class OllamaClient {
 
             for (const line of lines) {
               if (!line.trim()) { continue; }
-              try {
-                const json  = JSON.parse(line) as { message?: { content?: string } };
-                const token = json.message?.content ?? '';
-                if (token) {
-                  fullResponse += token;
-                  onToken(token);
-                }
-              } catch {
-                // Línea incompleta — se acumula en buffer y se reintenta.
+              const token = this.readOllamaStreamChunk(line, streamState);
+              if (token) {
+                fullResponse += token;
+                onToken(token);
               }
             }
           });
 
-          res.on('end', () => resolve(fullResponse));
+          res.on('end', () => {
+            // Modelos con razonamiento (qwen3, deepseek-r1…): si Ollama no
+            // devolvió `content`, se muestra el texto de `thinking` en lugar de
+            // dejar la respuesta vacía.
+            if (!streamState.content.trim() && streamState.thinking) {
+              fullResponse = streamState.thinking;
+              onToken(streamState.thinking);
+            }
+            resolve(fullResponse);
+          });
         }
       );
 
@@ -837,6 +882,7 @@ export class OllamaClient {
       const url = new URL(`${this.getActiveBaseUrl()}/api/chat`);
       const payload = this.getOllamaChatPayload(useModel, messages, true);
       const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+      const streamState = { content: '', thinking: '' };
 
       const req = http.request(
         {
@@ -860,20 +906,23 @@ export class OllamaClient {
 
             for (const line of lines) {
               if (!line.trim()) { continue; }
-              try {
-                const json  = JSON.parse(line) as { message?: { content?: string } };
-                const token = json.message?.content ?? '';
-                if (token) {
-                  fullResponse += token;
-                  onToken(token);
-                }
-              } catch {
-                // Línea incompleta.
+              const token = this.readOllamaStreamChunk(line, streamState);
+              if (token) {
+                fullResponse += token;
+                onToken(token);
               }
             }
           });
 
-          res.on('end', () => resolve(fullResponse));
+          res.on('end', () => {
+            // Igual que en el chat: el agente nunca se queda mudo con modelos
+            // que razonan antes de responder.
+            if (!streamState.content.trim() && streamState.thinking) {
+              fullResponse = streamState.thinking;
+              onToken(streamState.thinking);
+            }
+            resolve(fullResponse);
+          });
         }
       );
 
@@ -882,6 +931,33 @@ export class OllamaClient {
       req.write(payload);
       req.end();
     });
+  }
+
+  /**
+   * Lee una línea JSON del stream de Ollama.
+   *
+   * Devuelve el `content` (lo que se muestra al usuario) y acumula `thinking`
+   * en `state`: los modelos con razonamiento escriben ahí el texto y dejan
+   * `content` vacío hasta el final.
+   */
+  private readOllamaStreamChunk(
+    raw: string,
+    state: { content: string; thinking: string }
+  ): string {
+    try {
+      const json = JSON.parse(raw) as {
+        message?: { content?: string; thinking?: string };
+        response?: string;
+      };
+      const content  = json.message?.content ?? json.response ?? '';
+      const thinking = json.message?.thinking ?? '';
+      state.content  += content;
+      state.thinking += thinking;
+      return content;
+    } catch {
+      // Línea incompleta — se acumula en buffer y se reintenta.
+      return '';
+    }
   }
 
   private emitChunks(text: string, onToken: (token: string) => void): void {

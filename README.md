@@ -236,6 +236,21 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 | `local.agentRunTerminal` | Agente ejecuta `git`, `npm`, `gh` | `true` |
 | `local.agentAutoCommitPush` | Tras editar archivos, commit+push a tu repo | `true` |
 | `local.ollamaUrl` | URL de Ollama | `http://localhost:11434` |
+| `local.ollamaThink` | `auto` / `true` / `false` — razonamiento de modelos tipo qwen3. `auto` lo desactiva solo en modelos que piensan | `auto` |
+
+---
+
+## Modelos que razonan (qwen3, deepseek-r1…)
+
+Estos modelos escriben su cadena de pensamiento en `message.thinking` y dejan
+`message.content` **vacío** mientras piensan. Si el presupuesto de tokens
+(`local.ollamaNumPredict`) o el tiempo de espera se agotan durante el
+pensamiento, la respuesta llega **en blanco** (el chat «no responde»), y el
+autocompletado insertaba el texto del razonamiento con etiquetas `<think>`.
+
+Desde **v1.6.0** la extensión envía `think: false` en esos modelos (ajustable con
+`local.ollamaThink`), usa `thinking` como respaldo si aun así no hay `content`,
+y reconoce en el catálogo a `qwen3`, `qwen3-coder`, `deepseek-r1` y `gpt-oss`.
 
 ---
 
@@ -243,6 +258,8 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| **1.6.0** | Modelos con razonamiento (qwen3) arreglados: chat/agente ya no responden en blanco; autocompletado sin `<think>`; UI del chat se sincroniza al abrirse; CSP en los paneles; icono de la barra lateral con el diablo rojo de la marca |
+| **1.5.5** | Recomendaciones Ollama por RAM + VRAM, modo Ayudante y búsqueda web ampliada |
 | **1.0.36** | ReferenceLearner, intención usuario, APIs, blueprints, UI desbloqueada, Marketplace |
 | **1.0.12** | Agente +Internet investiga la web y luego programa |
 | **1.0.11** | Anti-refusal, reintento automático, Ollama optimizado para agente |
@@ -272,7 +289,21 @@ src/
   ollamaClient.ts       # Ollama + APIs + búsqueda web
   githubService.ts      # Git / GitHub
   dockViewProvider.ts   # icono dock → abre chat derecha
+  webviewSecurity.ts    # CSP + nonce de los paneles
 ```
+
+### Publicar en VS Marketplace
+
+El workflow `.github/workflows/publish-marketplace.yml` compila, empaqueta el
+`.vsix`, lo adjunta a la release y después publica en el Marketplace **solo si
+existe el secreto `VSCE_PAT`**:
+
+1. Crea un Personal Access Token en Azure DevOps (scope *Marketplace → Manage*).
+2. Añádelo como secreto del repositorio: `gh secret set VSCE_PAT`.
+3. Vuelve a lanzar el workflow (*Actions → Publish to VS Marketplace → Run workflow*).
+
+Sin el secreto, la release sigue teniendo el `.vsix` instalable y el workflow
+termina en verde con un aviso, en lugar de fallar.
 
 ---
 

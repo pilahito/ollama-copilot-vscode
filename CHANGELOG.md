@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.6.0] - 2026-09-14
+
+### Fixed — el chat/agente «no respondía» con modelos que razonan (qwen3, deepseek-r1…)
+- **Respuesta en blanco:** estos modelos escriben en `message.thinking` y dejan
+  `message.content` vacío mientras piensan. Si el presupuesto
+  (`local.ollamaNumPredict`) o el timeout se agotaban pensando, el chat devolvía
+  una respuesta **vacía**. Ahora se envía `think: false` en esos modelos y, si
+  aun así no hay `content`, se usa `thinking` como respaldo.
+- **Autocompletado:** insertaba el razonamiento literal con etiquetas `<think>`.
+  Ahora devuelve solo el código.
+- **Ajuste nuevo `local.ollamaThink`** (`auto` | `true` | `false`, por defecto `auto`).
+- **UI del panel de chat:** `onDidChangeVisibility` es `Event<void>` y el código
+  leía un booleano inexistente, así que al abrir el panel **nunca** se enviaba
+  `initState` ni se sincronizaban los modelos. Igual en el dock, que siempre se
+  «desactivaba» en lugar de abrir el chat.
+- **CSP:** los dos webviews declaran ya `Content-Security-Policy` con `nonce`
+  (el logo se sirve con `img-src ${cspSource}`), evitando avisos y bloqueos.
+
+### Added
+- Catálogo: `qwen3:8b`, `qwen3:14b`, `qwen3-coder:30b`, `deepseek-r1:8b`, `gpt-oss:20b`,
+  marcados como modelos con razonamiento y priorizados en chat/agente.
+- `src/webviewSecurity.ts` con el nonce y la CSP compartidos por los paneles.
+
+### Changed
+- Icono de la barra lateral con **el mismo diablo rojo de la marca** (antes morado);
+  `media/activitybar-48.png` era en realidad 72×72 y ahora es 48×48.
+- Workflow de publicación: empaqueta y adjunta el `.vsix` a cada release y
+  publica en el Marketplace solo si existe `VSCE_PAT` (si falta, avisa en vez de fallar).
+- Dependencias de desarrollo: `esbuild` 0.20 → 0.25, `typescript` 5.3 → 5.9.
+- `test_extension.mjs` prueba los modelos con `think: false` y avisa (en lugar de
+  fallar) cuando un modelo recomendado no está descargado.
+
 ## [1.5.5] - 2026-06-24
 
 ### Added
