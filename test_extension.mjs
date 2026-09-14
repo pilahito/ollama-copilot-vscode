@@ -203,7 +203,7 @@ await testChatStream(
 section('VSIX e instalación');
 const vsix = join(ROOT, `local-copilot-${VERSION}.vsix`);
 try {
-  execSync('npx --yes @vscode/vsce@2.32.0 package --no-dependencies', { cwd: ROOT, stdio: 'pipe' });
+  execSync('npx --yes @vscode/vsce@3.9.2 package --no-dependencies', { cwd: ROOT, stdio: 'pipe' });
   ok(`VSIX ${VERSION} generado`);
 } catch (e) {
   fail(`empaquetado: ${e.stderr?.toString() || e.message}`);
