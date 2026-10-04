@@ -42,6 +42,14 @@
     "onView:local.dockView"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
   "extensionDependencies": [
     "vscode.github-authentication"
   ],

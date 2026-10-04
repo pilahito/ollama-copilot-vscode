@@ -82,6 +82,14 @@ for (const container of viewsKeys) {
   }
 }
 
+// Regresión: sin declarar untrustedWorkspaces, VS Code desactiva la extensión
+// en Modo restringido (carpeta sin confiar) y nunca llega a activarse.
+if (pkg.capabilities?.untrustedWorkspaces?.supported !== true) {
+  fail('falta capabilities.untrustedWorkspaces.supported=true (Modo restringido)');
+} else {
+  ok('funciona en Modo restringido (untrustedWorkspaces)');
+}
+
 section('Chat — inicialización');
 const chatProviderSrc = readFileSync(join(ROOT, 'src/chatViewProvider.ts'), 'utf8');
 if (!chatProviderSrc.includes('waitUntilReady')) fail('falta waitUntilReady en chat');
