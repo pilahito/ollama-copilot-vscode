@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.6.1] - 2026-10-04
+
+### Fixed — la extensión no arrancaba en carpetas normales
+- **Modo restringido (Workspace Trust):** al abrir cualquier carpeta no confiada,
+  VS Code ponía la ventana en Modo restringido y **desactivaba la extensión por
+  completo** (ni se activaba ni cargaba el chat; solo funcionaba en carpetas
+  vacías). Se declara `capabilities.untrustedWorkspaces.supported = true`.
+  `virtualWorkspaces` queda en `false` porque necesita el sistema de archivos real.
+- **`viewsWelcome` mal ubicado:** estaba como clave dentro de `contributes.views`,
+  así que VS Code lo validaba como si fuera una vista y fallaba al activar con
+  `property \`id\` is mandatory and must be of type \`string\``. Movido a
+  `contributes.viewsWelcome`.
+
+### Added
+- Comprobaciones de regresión en `test_extension.mjs` para ambos fallos:
+  `viewsWelcome` en su aporte correcto, ninguna entrada *welcome* dentro de
+  `views`, toda vista con `id` y `untrustedWorkspaces` declarado.
+
 ## [1.6.0] - 2026-09-14
 
 ### Fixed — el chat/agente «no respondía» con modelos que razonan (qwen3, deepseek-r1…)

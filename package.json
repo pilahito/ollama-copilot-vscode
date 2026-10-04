@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
   "description": "Asistente de IA en VS Code con tres modos: Chat (ideas y sugerencias), Profesor (aprende el código) y Ayudante/agente (lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build). Autocompletado local con Ollama.",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -34,7 +34,11 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Programming Languages", "Machine Learning", "Other"],
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
   "icon": "media/icon.png",
   "activationEvents": [
     "onStartupFinished",
@@ -248,37 +252,103 @@
         }
       ],
       "commandPalette": [
-        { "command": "local.openChat" },
-        { "command": "local.clearChat" },
-        { "command": "local.openDock" },
-        { "command": "local.explainCode", "when": "editorTextFocus" },
-        { "command": "local.generateCode", "when": "editorTextFocus" },
-        { "command": "local.createProject" },
-        { "command": "local.fixError", "when": "editorTextFocus" },
-        { "command": "local.refactorCode", "when": "editorTextFocus" },
-        { "command": "local.checkConnection" },
-        { "command": "local.runSelfTest" },
-        { "command": "local.debugVisual" },
-        { "command": "local.godMode" },
-        { "command": "local.testAgentLive" },
-        { "command": "local.battleReady" },
-        { "command": "local.toggleInlineSuggestions" },
-        { "command": "local.githubLogin" },
-        { "command": "local.githubLogout" },
-        { "command": "local.githubPublish" },
-        { "command": "local.githubClone" },
-        { "command": "local.githubRepos" },
-        { "command": "local.analyzeProject" },
-        { "command": "local.openAutoTerminal" },
-        { "command": "local.sshAnalyzeSystem" },
-        { "command": "local.ollamaBuild" },
-        { "command": "local.ollamaBuildTerminal" },
-        { "command": "local.grokOptimizeSystem" },
-        { "command": "local.buildNekotina" },
-        { "command": "local.useInternetProvider" },
-        { "command": "local.selectModel" },
-        { "command": "local.supportDonate" },
-        { "command": "local.openProviderSite" }
+        {
+          "command": "local.openChat"
+        },
+        {
+          "command": "local.clearChat"
+        },
+        {
+          "command": "local.openDock"
+        },
+        {
+          "command": "local.explainCode",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.generateCode",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.createProject"
+        },
+        {
+          "command": "local.fixError",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.refactorCode",
+          "when": "editorTextFocus"
+        },
+        {
+          "command": "local.checkConnection"
+        },
+        {
+          "command": "local.runSelfTest"
+        },
+        {
+          "command": "local.debugVisual"
+        },
+        {
+          "command": "local.godMode"
+        },
+        {
+          "command": "local.testAgentLive"
+        },
+        {
+          "command": "local.battleReady"
+        },
+        {
+          "command": "local.toggleInlineSuggestions"
+        },
+        {
+          "command": "local.githubLogin"
+        },
+        {
+          "command": "local.githubLogout"
+        },
+        {
+          "command": "local.githubPublish"
+        },
+        {
+          "command": "local.githubClone"
+        },
+        {
+          "command": "local.githubRepos"
+        },
+        {
+          "command": "local.analyzeProject"
+        },
+        {
+          "command": "local.openAutoTerminal"
+        },
+        {
+          "command": "local.sshAnalyzeSystem"
+        },
+        {
+          "command": "local.ollamaBuild"
+        },
+        {
+          "command": "local.ollamaBuildTerminal"
+        },
+        {
+          "command": "local.grokOptimizeSystem"
+        },
+        {
+          "command": "local.buildNekotina"
+        },
+        {
+          "command": "local.useInternetProvider"
+        },
+        {
+          "command": "local.selectModel"
+        },
+        {
+          "command": "local.supportDonate"
+        },
+        {
+          "command": "local.openProviderSite"
+        }
       ]
     },
     "viewsContainers": {
@@ -325,7 +395,17 @@
       "properties": {
         "local.provider": {
           "type": "string",
-          "enum": ["auto", "ollama", "gemini", "openrouter", "groq", "cohere", "together", "cerebras", "huggingface"],
+          "enum": [
+            "auto",
+            "ollama",
+            "gemini",
+            "openrouter",
+            "groq",
+            "cohere",
+            "together",
+            "cerebras",
+            "huggingface"
+          ],
           "enumDescriptions": [
             "Auto - Ollama si está instalado, si no la primera API configurada en ⚙️",
             "Ollama - IA local (gratis, sin internet)",
