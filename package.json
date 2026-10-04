@@ -304,14 +304,14 @@
           "name": "Ayudante de programación",
           "icon": "media/activitybar.png"
         }
-      ],
-      "localcopilot-chatWelcome": [
-        {
-          "view": "local.chatView",
-          "contents": "Tu asistente de IA dentro de VS Code.\n\n**Chat** — ideas y sugerencias\n**Profesor** — aprende el código\n**Ayudante** — agente autónomo: lee tu proyecto, busca en internet, escribe y modifica archivos, ejecuta terminal (git, npm, ssh) y Ollama Build\n\n[Abrir chat](command:local.openChat)"
-        }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "local.chatView",
+        "contents": "Tu asistente de IA dentro de VS Code.\n\n**Chat** — ideas y sugerencias\n**Profesor** — aprende el código\n**Ayudante** — agente autónomo: lee tu proyecto, busca en internet, escribe y modifica archivos, ejecuta terminal (git, npm, ssh) y Ollama Build\n\n[Abrir chat](command:local.openChat)"
+      }
+    ],
     "configuration": {
       "title": "Local Copilot",
       "properties": {

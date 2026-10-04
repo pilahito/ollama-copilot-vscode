@@ -58,6 +58,30 @@ else ok('vista local.chatView en barra derecha');
 if (!pkg.contributes?.views?.localcopilot?.find((v) => v.id === 'local.dockView')) fail('falta dock izquierdo');
 else ok('dock local.dockView en barra izquierda');
 
+// Regresión: viewsWelcome debe ir en su propio aporte, no dentro de `views`.
+// Si se mete como clave de `views`, VS Code valida cada elemento como vista y
+// falla con "property `id` is mandatory and must be of type `string`".
+const viewsKeys = Object.keys(pkg.contributes?.views ?? {});
+const welcome = pkg.contributes?.viewsWelcome;
+if (!Array.isArray(welcome) || !welcome.find((w) => w.view === 'local.chatView')) {
+  fail('falta contributes.viewsWelcome con la vista local.chatView');
+} else {
+  ok('viewsWelcome en su aporte correcto');
+}
+const misplacedWelcome = viewsKeys.filter((k) => k.toLowerCase().includes('welcome'));
+if (misplacedWelcome.length > 0) {
+  fail(`viewsWelcome mal ubicado dentro de views: ${misplacedWelcome.join(', ')}`);
+} else {
+  ok('ninguna entrada welcome dentro de views');
+}
+for (const container of viewsKeys) {
+  for (const v of pkg.contributes.views[container] ?? []) {
+    if (typeof v.id !== 'string' || !v.id) {
+      fail(`vista sin id en views.${container} (VS Code la rechaza)`);
+    }
+  }
+}
+
 section('Chat — inicialización');
 const chatProviderSrc = readFileSync(join(ROOT, 'src/chatViewProvider.ts'), 'utf8');
 if (!chatProviderSrc.includes('waitUntilReady')) fail('falta waitUntilReady en chat');
