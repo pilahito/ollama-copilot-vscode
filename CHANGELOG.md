@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Performance and safety (release candidate)
+- El agente lee en paralelo los archivos de contexto seleccionados (máximo 8).
+- La consulta de modelos Ollama agrupa solicitudes simultáneas y aplica caché breve para resultados vacíos o errores.
+- La precarga reutiliza la lista de modelos al comprobar la conexión, evitando una llamada redundante a `/api/tags`.
+- La confirmación antes de aplicar acciones del agente queda activada por defecto.
+- Añadida una prueba de regresión para estas mejoras.
+
 ### Fixed
 - El agente y el Profesor verifican el contenido escrito y confirman los borrados.
 - Corregidos errores de tipos que impedían una comprobación estricta del código.

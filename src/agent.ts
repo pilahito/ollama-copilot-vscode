@@ -791,13 +791,21 @@ export class LocalAgent {
   private async readFiles(filePaths: string[]): Promise<Record<string, string>> {
     const contents: Record<string, string> = {};
 
-    for (const fp of filePaths) {
+    // MAX_CONTEXT_FILES limita esta lista a 8 rutas: solapar lecturas reduce la
+    // latencia de E/S sin crear concurrencia ilimitada.
+    const entries = await Promise.all(filePaths.map(async (fp) => {
       try {
-        const data     = await vscode.workspace.fs.readFile(vscode.Uri.file(fp));
-        contents[fp]   = Buffer.from(data).toString('utf-8').slice(0, MAX_FILE_CHARS);
+        const data = await vscode.workspace.fs.readFile(vscode.Uri.file(fp));
+        return [fp, Buffer.from(data).toString('utf-8').slice(0, MAX_FILE_CHARS)] as const;
       } catch {
         // Archivo no legible — se omite.
+        return undefined;
       }
+    }));
+
+    // Promise.all conserva el orden y mantiene estable el contexto.
+    for (const entry of entries) {
+      if (entry) { contents[entry[0]] = entry[1]; }
     }
 
     return contents;
@@ -2785,7 +2793,7 @@ export class LocalAgent {
   ): Promise<boolean> {
     const requireConfirmation = vscode.workspace
       .getConfiguration('local')
-      .get('requireConfirmation', false);
+      .get('requireConfirmation', true);
 
     if (!requireConfirmation) {
       return true;

@@ -229,10 +229,10 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 | Opción | Descripción | Default |
 |--------|-------------|---------|
 | `local.provider` | `auto`, `ollama`, `groq`, `gemini`… | `auto` |
-| `local.useInternet` | Activa búsqueda web (+Internet) | `false` |
+| `local.useInternet` | Activa búsqueda web (+Internet) | `true` |
 | `local.chatModel` | Modelo para chat y agente | `qwen2.5-coder:14b` |
 | `local.completionModel` | Modelo autocompletado | `qwen2.5-coder:7b` |
-| `local.requireConfirmation` | Pedir OK antes de escribir archivos | `false` |
+| `local.requireConfirmation` | Pedir OK antes de aplicar cambios del agente | `true` |
 | `local.agentRunTerminal` | Agente ejecuta `git`, `npm`, `gh` | `true` |
 | `local.agentAutoCommitPush` | Tras editar archivos, commit+push a tu repo | `false` |
 | `local.ollamaUrl` | URL de Ollama | `http://localhost:11434` |
@@ -258,6 +258,7 @@ y reconoce en el catálogo a `qwen3`, `qwen3-coder`, `deepseek-r1` y `gpt-oss`.
 
 | Versión | Cambios principales |
 |---------|---------------------|
+| **1.6.2 (candidata)** | Lectura paralela del contexto, menos solicitudes redundantes a Ollama y confirmación del agente activada por defecto |
 | **1.6.0** | Modelos con razonamiento (qwen3) arreglados: chat/agente ya no responden en blanco; autocompletado sin `<think>`; UI del chat se sincroniza al abrirse; CSP en los paneles; icono de la barra lateral con el diablo rojo de la marca |
 | **1.5.5** | Recomendaciones Ollama por RAM + VRAM, modo Ayudante y búsqueda web ampliada |
 | **1.0.36** | ReferenceLearner, intención usuario, APIs, blueprints, UI desbloqueada, Marketplace |

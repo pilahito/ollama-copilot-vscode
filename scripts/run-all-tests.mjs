@@ -13,6 +13,7 @@ const scripts = [
   'scripts/test-reference-learner.mjs',
   'scripts/test-organization.mjs',
   'scripts/test-bot-intent.mjs',
+  'scripts/test-performance-hardening.mjs',
 ];
 
 let failed = 0;
