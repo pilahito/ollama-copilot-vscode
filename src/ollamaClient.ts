@@ -10,8 +10,9 @@
  *  Created  : 2026
  *  Contact  : https://github.com/DavidPilahito7
  *
- *  Se distribuye bajo los términos de la licencia MIT incluida en la raíz.
- *  Distributed under the MIT License included in the repository root.
+ *  Este software es propiedad intelectual de DavidPilahito7 y se distribuye
+ *  bajo los términos de la licencia MIT incluida en la raíz del repositorio.
+ *  Copyright © 2026 DavidPilahito7. Distributed under the repository's MIT License.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
