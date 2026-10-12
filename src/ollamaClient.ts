@@ -10,15 +10,8 @@
  *  Created  : 2026
  *  Contact  : https://github.com/DavidPilahito7
  *
- *  Este software es propiedad intelectual de DavidPilahito7.
- *  Queda prohibida su redistribución, modificación o uso comercial
- *  sin el consentimiento explícito del autor, salvo los términos
- *  permitidos por la licencia MIT adjunta.
- *
- *  This software is the intellectual property of DavidPilahito7.
- *  Redistribution, modification or commercial use without explicit
- *  consent of the author is prohibited, except as permitted by
- *  the MIT License terms herein.
+ *  Se distribuye bajo los términos de la licencia MIT incluida en la raíz.
+ *  Distributed under the MIT License included in the repository root.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -699,9 +692,15 @@ export class OllamaClient {
    * @param prompt  Fragmento de código a completar.
    * @param model   Modelo a usar (usa `completionModel` de config si se omite).
    */
-  async generateCompletion(prompt: string, model?: string): Promise<string> {
+  async generateCompletion(
+    prompt: string,
+    model?: string,
+    token?: vscode.CancellationToken
+  ): Promise<string> {
+    if (token?.isCancellationRequested) { return ''; }
     this.refreshConfig();
     await this.resolveAutoProvider();
+    if (token?.isCancellationRequested) { return ''; }
     const effective = this.getEffectiveProvider();
     const useModel = this.resolveInstalledModelName(model ?? this.getModelForTask('completion'));
 
@@ -751,7 +750,7 @@ export class OllamaClient {
       }
     });
 
-    const result = await this.httpPost('/api/generate', body, OllamaClient.TIMEOUT_AGENT_MS);
+    const result = await this.httpPost('/api/generate', body, OllamaClient.TIMEOUT_AGENT_MS, token);
     try {
       const data = JSON.parse(result) as { response?: string; thinking?: string };
       // En modelos con razonamiento el texto puede venir en `thinking`.
@@ -1305,10 +1304,27 @@ export class OllamaClient {
   }
 
   /** Petición POST simple (sin streaming) sobre el API de Ollama. */
-  private httpPost(path: string, body: string, timeoutMs = OllamaClient.TIMEOUT_POST_MS): Promise<string> {
+  private httpPost(
+    path: string,
+    body: string,
+    timeoutMs = OllamaClient.TIMEOUT_POST_MS,
+    token?: vscode.CancellationToken
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
+      if (token?.isCancellationRequested) {
+        resolve('');
+        return;
+      }
       const url = new URL(this.getActiveBaseUrl() + path);
       const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+      let settled = false;
+      let cancellation: vscode.Disposable | undefined;
+      const finish = (callback: () => void): void => {
+        if (settled) { return; }
+        settled = true;
+        cancellation?.dispose();
+        callback();
+      };
       const req = http.request(
         {
           hostname: url.hostname,
@@ -1324,12 +1340,15 @@ export class OllamaClient {
         (res) => {
           let data = '';
           res.on('data', (chunk: Buffer) => (data += chunk));
-          res.on('end', () => resolve(data));
+          res.on('end', () => finish(() => resolve(data)));
         }
       );
 
-      req.on('error',   reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.on('error', (err) => finish(() => reject(err)));
+      req.on('timeout', () => { req.destroy(new Error('timeout')); });
+      cancellation = token?.onCancellationRequested(() => {
+        req.destroy(new Error('cancelled'));
+      });
       req.write(body);
       req.end();
     });

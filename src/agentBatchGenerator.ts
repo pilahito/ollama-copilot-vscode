@@ -306,7 +306,7 @@ export function mergeBatchActions(
   }
   for (const a of newActions) {
     const key = parseFilePath(a.filePath);
-    if (key && a.content.length >= 10) {
+    if (key && (a.content?.length ?? 0) >= 10) {
       byPath.set(key, { ...a, filePath: key });
     }
   }

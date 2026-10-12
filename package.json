@@ -719,7 +719,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "node esbuild.js",
+    "compile": "npm run check-types && node esbuild.js",
+    "check-types": "tsc --noEmit",
     "watch": "node esbuild.js --watch",
     "test": "node scripts/run-all-tests.mjs",
     "test:full": "node scripts/run-all-tests.mjs && node test_all_options.mjs",

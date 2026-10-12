@@ -9,15 +9,8 @@
  *  Created  : 2026
  *  Contact  : https://github.com/pilahito
  *
- *  Este software es propiedad intelectual de DavidPilahito7.
- *  Queda prohibida su redistribución, modificación o uso comercial
- *  sin el consentimiento explícito del autor, salvo los términos
- *  permitidos por la licencia MIT adjunta.
- *
- *  This software is the intellectual property of DavidPilahito7.
- *  Redistribution, modification or commercial use without explicit
- *  consent of the author is prohibited, except as permitted by
- *  the MIT License terms herein.
+ *  Se distribuye bajo los términos de la licencia MIT incluida en la raíz.
+ *  Distributed under the MIT License included in the repository root.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -1527,13 +1520,14 @@ export class LocalChatViewProvider implements vscode.WebviewViewProvider {
 
       const agentModel = this.ollama.getModelForTask('agent');
       agentProgress(`🧠 Agente (${agentModel}) — verás el código escribirse aquí en vivo`);
-      tokenFlusher = this.createAgentTokenFlusher(gen);
+      const activeTokenFlusher = this.createAgentTokenFlusher(gen);
+      tokenFlusher = activeTokenFlusher;
       const result = await this.agent.handleRequest(
         text,
         agentProgress,
         agentModel,
         requirementsSession,
-        (token) => tokenFlusher.push(token)
+        (token) => activeTokenFlusher.push(token)
       );
       tokenFlusher.flush();
 

@@ -9,15 +9,8 @@
  *  Created  : 2026
  *  Contact  : https://github.com/pilahito
  *
- *  Este software es propiedad intelectual de DavidPilahito7.
- *  Queda prohibida su redistribución, modificación o uso comercial
- *  sin el consentimiento explícito del autor, salvo los términos
- *  permitidos por la licencia MIT adjunta.
- *
- *  This software is the intellectual property of DavidPilahito7.
- *  Redistribution, modification or commercial use without explicit
- *  consent of the author is prohibited, except as permitted by
- *  the MIT License terms herein.
+ *  Se distribuye bajo los términos de la licencia MIT incluida en la raíz.
+ *  Distributed under the MIT License included in the repository root.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -398,7 +391,7 @@ export class LocalAgent {
       prompt: effectivePrompt,
       blueprint,
       internetEnabled: webEnabled,
-      github: this.github,
+      github: this.github ?? undefined,
       hardware: this.ollama.getHardwareProfile(),
     });
     if (smart?.block) {
@@ -1389,7 +1382,7 @@ export class LocalAgent {
       moduleToCreate,
       foldersToCreate,
       architecture: mergedArch,
-      blueprint,
+      blueprint: blueprint ?? undefined,
     };
   }
 
@@ -2970,15 +2963,36 @@ export class LocalAgent {
     onProgress: (msg: string) => void
   ): Promise<void> {
     for (const action of actions) {
-      if (action.type === 'delete') { continue; }
       const fullPath = path.isAbsolute(action.filePath)
         ? action.filePath
         : path.join(rootPath, action.filePath);
+      const uri = vscode.Uri.file(fullPath);
       try {
-        await vscode.workspace.fs.stat(vscode.Uri.file(fullPath));
-        onProgress(`✅ En disco: ${action.filePath}`);
-      } catch {
-        onProgress(`❌ NO creado: ${action.filePath} — reintenta o revisa Output → Local Copilot`);
+        if (action.type === 'delete') {
+          await vscode.workspace.fs.stat(uri);
+          onProgress(`❌ Sigue existiendo: ${action.filePath} — no se pudo confirmar el borrado`);
+          continue;
+        }
+
+        const actual = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+        const expected = this.sanitizeActionContent(action.content ?? '');
+        if (actual !== expected) {
+          this.agentLog(`[VERIFY] El contenido escrito no coincide con la acción generada: ${action.filePath}`);
+          onProgress(`⚠️ Verificación incompleta: ${action.filePath} existe, pero su contenido no coincide con el cambio generado.`);
+          continue;
+        }
+        onProgress(`✅ Verificado en disco: ${action.filePath}`);
+      } catch (err: unknown) {
+        if (action.type === 'delete') {
+          const code = (err as { code?: string }).code;
+          if (code === 'ENOENT' || code === 'FileNotFound') {
+            onProgress(`✅ Borrado verificado: ${action.filePath}`);
+          } else {
+            onProgress(`❌ No se pudo verificar el borrado de ${action.filePath}`);
+          }
+        } else {
+          onProgress(`❌ No se pudo verificar: ${action.filePath} — revisa permisos y Output → Local Agente`);
+        }
       }
     }
   }

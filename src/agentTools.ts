@@ -171,10 +171,11 @@ export function parseAgentToolCalls(raw: string): AgentToolCall[] {
   const writeAltRe =
     /TOOL:\s*WRITE\s*\|\s*PATH:\s*(.+?)\s*\|\s*MOTIVO:\s*(.+?)\n+(?:c[oó]digo\n)?(?:```[\w]*\n)?([\s\S]*?)(?:<<FIN>>|```\s*\n|(?=TOOL:)|$)/gi;
   while ((m = writeAltRe.exec(upper)) !== null) {
-    const content = m[3].replace(/^c[oó]digo\n/i, '').replace(/```\s*$/,'').trim();
+    const [, filePath, reason, rawContent] = m;
+    const content = rawContent.replace(/^c[oó]digo\n/i, '').replace(/```\s*$/,'').trim();
     if (!content || content.length < 2) { continue; }
-    if (calls.some((c) => c.tool === 'write' && c.path === m[1].trim())) { continue; }
-    calls.push({ tool: 'write', path: m[1].trim(), reason: m[2].trim(), content });
+    if (calls.some((c) => c.tool === 'write' && c.path === filePath.trim())) { continue; }
+    calls.push({ tool: 'write', path: filePath.trim(), reason: reason.trim(), content });
   }
 
   return calls;

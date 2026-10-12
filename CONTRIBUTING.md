@@ -20,10 +20,10 @@ Puedes crear libremente:
 
 **Eso es lo que pedimos:** si el agente, tú u otra herramienta **modifica archivos** de un proyecto con Git, los cambios deben **quedar en el repositorio** (commit + push al remoto del usuario).
 
-Con Local Copilot activado (`local.agentAutoCommitPush`, por defecto **sí**):
+Con Local Copilot activado (`local.agentAutoCommitPush`, por defecto **no**):
 
 1. El **Agente** aplica los cambios en disco
-2. Hace **commit y push** automático a tu `origin` (si hay repo Git conectado)
+2. Si activas esta opción, hace **commit y push** automático a tu `origin` (si hay repo Git conectado)
 3. Si trabajas sobre este repo oficial, abre después un **PR** para integrar en `pilahito/ollama-copilot-vscode`
 
 ## Flujo recomendado para colaborar en el repo oficial

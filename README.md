@@ -202,7 +202,7 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 ### Recomendaciones, variantes y tu repositorio
 
 - **Aceptamos recomendaciones** y **variantes** (forks, temas, configs) bajo licencia MIT — ver [CONTRIBUTING.md](CONTRIBUTING.md).
-- Si el **Agente modifica archivos**, con `local.agentAutoCommitPush` (activo por defecto) hace **commit y push** a tu `origin` automáticamente.
+- Si el **Agente modifica archivos**, con `local.agentAutoCommitPush` (desactivado por defecto) puede hacer **commit y push** a tu `origin` automáticamente cuando lo actives.
 - Para integrar cambios en el repo oficial: abre un **Pull Request** tras el push.
 
 > Al hacer commit manual en VS Code escribe un **mensaje** en el cuadro de Control de código fuente antes de confirmar.
@@ -234,7 +234,7 @@ Requisitos: `git`, `gh` CLI (`gh auth login`) o sesión de GitHub en VS Code.
 | `local.completionModel` | Modelo autocompletado | `qwen2.5-coder:7b` |
 | `local.requireConfirmation` | Pedir OK antes de escribir archivos | `false` |
 | `local.agentRunTerminal` | Agente ejecuta `git`, `npm`, `gh` | `true` |
-| `local.agentAutoCommitPush` | Tras editar archivos, commit+push a tu repo | `true` |
+| `local.agentAutoCommitPush` | Tras editar archivos, commit+push a tu repo | `false` |
 | `local.ollamaUrl` | URL de Ollama | `http://localhost:11434` |
 | `local.ollamaThink` | `auto` / `true` / `false` — razonamiento de modelos tipo qwen3. `auto` lo desactiva solo en modelos que piensan | `auto` |
 

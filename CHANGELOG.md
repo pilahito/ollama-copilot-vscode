@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- El agente y el Profesor verifican el contenido escrito y confirman los borrados.
+- Corregidos errores de tipos que impedían una comprobación estricta del código.
+- La compilación ejecuta primero `tsc --noEmit` para detectar errores antes de empaquetar.
+- Documentación y encabezados alineados con la licencia MIT y los valores reales de configuración.
+
+### Changed
+- Las sugerencias inline canceladas por VS Code también cancelan la petición local a Ollama.
+
 ## [1.6.1] - 2026-10-04
 
 ### Fixed — la extensión no arrancaba en carpetas normales
