@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
   "description": "Asistente de IA en VS Code con tres modos: Chat (ideas y sugerencias), Profesor (aprende el código) y Ayudante/agente (lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build). Autocompletado local con Ollama.",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [
@@ -467,8 +467,8 @@
         },
         "local.requireConfirmation": {
           "type": "boolean",
-          "default": false,
-          "description": "Si está activado, el modo agente pide confirmación antes de escribir archivos. Si está desactivado, aplica cambios automáticamente."
+          "default": true,
+          "description": "Pide confirmación antes de aplicar cambios del agente (archivos, terminal o acciones externas)."
         },
         "local.agentRunTerminal": {
           "type": "boolean",

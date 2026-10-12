@@ -110,11 +110,15 @@ export class OllamaClient {
   private cachedBrowserName?: string;
   private cachedModelList:     string[] = [];
   private modelListCacheTime  = 0;
+  private modelListErrorTime  = 0;
+  private modelListRequest?: Promise<string[]>;
   private connectionCache:     OllamaConnectionResult | null = null;
   private connectionCacheTime = 0;
   private prefetchDone        = false;
   private resolvedBaseUrl?:   string;
   private static readonly MODEL_LIST_CACHE_MS = 120_000;
+  private static readonly MODEL_LIST_EMPTY_CACHE_MS = 10_000;
+  private static readonly MODEL_LIST_ERROR_CACHE_MS = 3_000;
   private static readonly CONNECTION_CACHE_MS = 10_000;
 
   // ── Timeouts ────────────────────────────────────────────────────────────────
@@ -405,7 +409,8 @@ export class OllamaClient {
     } else if (this.cachedModelList.length > 0) {
       this.prefetchDone = true;
     }
-    await this.checkConnection(true);
+    // La lista ya se ha actualizado arriba; evita repetir /api/tags.
+    await this.checkConnection(true, false);
   }
 
   getHardwareProfile(): HardwareProfile {
@@ -459,6 +464,7 @@ export class OllamaClient {
     this.connectionCache     = null;
     this.connectionCacheTime = 0;
     this.modelListCacheTime  = 0;
+    this.modelListErrorTime  = 0;
     this.resolvedBaseUrl     = undefined;
   }
 
@@ -473,7 +479,7 @@ export class OllamaClient {
    * Comprueba si Ollama está corriendo en local.
    * Usa caché 10s para evitar lag en la UI.
    */
-  async checkConnection(force = false): Promise<OllamaConnectionResult> {
+  async checkConnection(force = false, refreshModels = force): Promise<OllamaConnectionResult> {
     const now = Date.now();
     if (!force && this.connectionCache &&
         now - this.connectionCacheTime < OllamaClient.CONNECTION_CACHE_MS) {
@@ -499,7 +505,7 @@ export class OllamaClient {
       return full;
     };
 
-    const installedOllamaModels = await this.getInstalledOllamaModels(force);
+    const installedOllamaModels = await this.getInstalledOllamaModels(refreshModels);
 
     if (this.isInternetProvider(effective)) {
       if (effective === 'gemini') {
@@ -631,19 +637,39 @@ export class OllamaClient {
   // Nuevo: detectar siempre las IAs instaladas localmente, incluso si usas proveedor remoto
   async getInstalledOllamaModels(force = false): Promise<string[]> {
     const now = Date.now();
-    if (!force && this.cachedModelList.length > 0 &&
-        now - this.modelListCacheTime < OllamaClient.MODEL_LIST_CACHE_MS) {
+    const cacheTtl = this.cachedModelList.length > 0
+      ? OllamaClient.MODEL_LIST_CACHE_MS
+      : OllamaClient.MODEL_LIST_EMPTY_CACHE_MS;
+    if (!force && now - this.modelListCacheTime < cacheTtl) {
       return this.cachedModelList;
     }
-    try {
-      const data = await this.httpGet('/api/tags');
-      const parsed = JSON.parse(data);
-      const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
-      this.cachedModelList    = models;
-      this.modelListCacheTime = now;
-      return models;
-    } catch {
+
+    if (!force && this.modelListErrorTime > 0 &&
+        now - this.modelListErrorTime < OllamaClient.MODEL_LIST_ERROR_CACHE_MS) {
       return this.cachedModelList;
+    }
+    if (this.modelListRequest) { return this.modelListRequest; }
+
+    const request = (async (): Promise<string[]> => {
+      try {
+        const data = await this.httpGet('/api/tags');
+        const parsed = JSON.parse(data);
+        const models = (parsed.models ?? []).map((m: { name: string }) => m.name);
+        this.cachedModelList    = models;
+        this.modelListCacheTime = Date.now();
+        this.modelListErrorTime = 0;
+        return models;
+      } catch {
+        // Evita tormentas de solicitudes al arrancar si Ollama no responde.
+        this.modelListErrorTime = Date.now();
+        return this.cachedModelList;
+      }
+    })();
+    this.modelListRequest = request;
+    try {
+      return await request;
+    } finally {
+      if (this.modelListRequest === request) { this.modelListRequest = undefined; }
     }
   }
 
