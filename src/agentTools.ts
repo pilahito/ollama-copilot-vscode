@@ -65,18 +65,41 @@ export function isAllowedShellCommand(command: string): boolean {
 }
 
 function safePath(root: string, rel: string): string | null {
-  let cleaned = rel.replace(/\\/g, '/').replace(/^\.\//, '').trim();
-  if (!cleaned || cleaned.includes('..')) { return null; }
-  const rootResolved = path.resolve(root);
-  if (path.isAbsolute(cleaned) && cleaned.startsWith(rootResolved)) {
-    return cleaned;
+  const cleaned = rel.replace(/\\/g, '/').trim();
+  if (!cleaned) { return null; }
+
+  let rootResolved: string;
+  try {
+    rootResolved = fs.realpathSync(path.resolve(root));
+  } catch {
+    return null;
   }
-  if (path.isAbsolute(cleaned)) {
-    cleaned = path.basename(cleaned);
+
+  const requested = path.isAbsolute(cleaned)
+    ? path.resolve(cleaned)
+    : path.resolve(rootResolved, cleaned.replace(/^\.\//, ''));
+  const isWithinRoot = (candidate: string): boolean => {
+    const relative = path.relative(rootResolved, candidate);
+    return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+  };
+  if (!isWithinRoot(requested)) { return null; }
+
+  // realpath existing targets and the nearest existing parent for new files.
+  // This blocks symlinks inside the workspace that point outside it.
+  let ancestor = requested;
+  while (!fs.existsSync(ancestor)) {
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) { return null; }
+    ancestor = parent;
   }
-  const full = path.resolve(root, cleaned);
-  if (!full.startsWith(rootResolved)) { return null; }
-  return full;
+  try {
+    const realAncestor = fs.realpathSync(ancestor);
+    if (!isWithinRoot(realAncestor)) { return null; }
+    const resolved = path.resolve(realAncestor, path.relative(ancestor, requested));
+    return isWithinRoot(resolved) ? resolved : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Parsea bloques TOOL: del modelo (compatible con formato ACCION/COMANDO). */
