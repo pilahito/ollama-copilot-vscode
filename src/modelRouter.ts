@@ -1,5 +1,7 @@
 /** Selección automática del mejor modelo Ollama por tarea. */
 
+import { MODEL_CATALOG } from './modelCatalog';
+
 export type TaskKind = 'chat' | 'completion' | 'agent' | 'teacher';
 
 export interface TaskModels {
@@ -18,6 +20,29 @@ export const findInstalledModel = (installed: string[], needle: string): string 
     return b === n || m === needle || m.startsWith(`${n}:`) || b.includes(n);
   });
 };
+
+/** Nombres conocidos de modelos con cadena de pensamiento (aunque no estén en el catálogo). */
+const REASONING_NAME_RE =
+  /(qwen3|deepseek-r1|deepseek-r2|deepseek-v3\.[12]|qwq|magistral|gpt-oss|nemotron|reasoning|thinking)/i;
+
+/**
+ * ¿El modelo razona antes de responder?
+ *
+ * Estos modelos escriben su cadena de pensamiento (`thinking`) y tardan: valen
+ * para chat/agente, pero son **malos para autocompletado** (latencia alta y
+ * riesgo de insertar `<think>`). Se consulta el catálogo y, para nombres no
+ * catalogados (alias propios, cuantizaciones…), se deduce por el nombre.
+ */
+export function isReasoningModel(name: string): boolean {
+  if (!name) { return false; }
+  const n = norm(name);
+  const entry = MODEL_CATALOG.find((m) => {
+    const b = norm(m.name);
+    return n === b || n.startsWith(`${b}:`);
+  });
+  if (entry?.reasoning) { return true; }
+  return REASONING_NAME_RE.test(n);
+}
 
 const COMPLETION_ORDER = [
   'qwen2.5-coder:7b',
@@ -72,10 +97,31 @@ function pickFromOrder(installed: string[], order: string[]): string | null {
   return installed[0];
 }
 
+/**
+ * Modelo para autocompletado: descarta los que razonan y prefiere coder/pequeño.
+ *
+ * Antes se caía a `installed[0]`, que podía ser `deepseek-r1:14b`: el
+ * autocompletado se volvía lentísimo e insertaba razonamiento.
+ */
+export function pickCompletionModel(installed: string[]): string {
+  if (!installed.length) { return ''; }
+  const fast = installed.filter((m) => !isReasoningModel(m));
+  const pool = fast.length ? fast : installed;
+
+  for (const name of COMPLETION_ORDER) {
+    const hit = findInstalledModel(pool, name);
+    if (hit) { return hit; }
+  }
+  const coder = pool.find((m) => /coder|codellama|starcoder/i.test(m));
+  if (coder) { return coder; }
+  const small = pool.find((m) => /(1\.5b|:2b|:3b|:4b|mini|:7b|:8b)/i.test(m));
+  return small ?? pool[0];
+}
+
 /** Elige el mejor modelo instalado para cada tarea. */
 export function pickTaskModels(installed: string[]): TaskModels | null {
   if (!installed.length) { return null; }
-  const completion = pickFromOrder(installed, COMPLETION_ORDER) ?? installed[0];
+  const completion = pickCompletionModel(installed);
   const chat       = pickFromOrder(installed, CHAT_ORDER) ?? completion;
   const agent      = pickFromOrder(installed, AGENT_ORDER) ?? chat;
   return { chat, completion, agent };
@@ -93,9 +139,17 @@ export function pickTaskModelsWithHardware(
     pickFromOrder(installed, order) ??
     installed[0];
 
+  // El plan por hardware puede proponer un modelo que razona para autocompletar:
+  // si hay alternativa rápida instalada, se usa esa.
+  const preferredCompletion = findInstalledModel(installed, hwPlan.completion);
+  const completion =
+    preferredCompletion && !isReasoningModel(preferredCompletion)
+      ? preferredCompletion
+      : pickCompletionModel(installed);
+
   return {
     chat: pick(hwPlan.chat, CHAT_ORDER),
-    completion: pick(hwPlan.completion, COMPLETION_ORDER),
+    completion,
     agent: pick(hwPlan.agent, AGENT_ORDER),
   };
 }

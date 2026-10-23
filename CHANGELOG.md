@@ -1,15 +1,31 @@
 # Changelog
 
-## Unreleased
+## [1.6.2] - 2026-10-23
 
 ### Fixed
 - El agente y el Profesor verifican el contenido escrito y confirman los borrados.
 - Corregidos errores de tipos que impedían una comprobación estricta del código.
 - La compilación ejecuta primero `tsc --noEmit` para detectar errores antes de empaquetar.
 - Documentación y encabezados alineados con la licencia MIT y los valores reales de configuración.
+- **Autocompletado con un modelo que razona:** `pickFromOrder` caía a `installed[0]`,
+  así que si ese era `deepseek-r1:14b` el autocompletado usaba un modelo de
+  razonamiento (latencia altísima y riesgo de insertar `<think>`). Ahora el
+  autocompletado **nunca** elige uno si hay alternativa y prefiere coder/pequeño.
+
+### Added
+- `isReasoningModel()` en `modelRouter` (catálogo + nombres conocidos) y
+  `pickCompletionModel()`, reutilizados por `ollamaClient`.
+- **Migración automática:** si `local.completionModel` apunta a un modelo que
+  razona y hay otro válido instalado, se cambia solo al detectar modelos.
+- `scripts/test-model-router.mjs`: test de **comportamiento** del selector
+  (compila `src/modelRouter.ts` con esbuild y ejecuta la lógica real),
+  integrado en `npm test` (6 suites).
 
 ### Changed
 - Las sugerencias inline canceladas por VS Code también cancelan la petición local a Ollama.
+
+### Removed
+- `src/agent.ts.bak` y `ollama-copilot-vscode.zip`: restos sin uso ni referencias.
 
 ## [1.6.1] - 2026-10-04
 

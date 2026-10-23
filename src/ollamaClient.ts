@@ -23,6 +23,7 @@ import { getHardwareProfile, type HardwareProfile } from './hardwareProfile';
 import { searchNpmPackages } from './npmRegistry';
 import {
   findInstalledModel,
+  isReasoningModel,
   modelInstalled,
   pickTaskModels,
   pickTaskModelsWithHardware,
@@ -40,13 +41,6 @@ import type { ProjectBlueprint } from './projectBlueprints';
  * `message.content` VACÍO mientras piensa. Si no se desactiva el razonamiento
  * o no se lee el campo `thinking`, el chat y el agente parecen «no responder».
  */
-const REASONING_MODEL_RE =
-  /(qwen3|deepseek-r1|deepseek-r2|deepseek-v3\.[12]|qwq|magistral|gpt-oss|nemotron|reasoning|thinking)/i;
-
-/** ¿El modelo usa cadena de pensamiento antes de responder? */
-export function isReasoningModel(model: string): boolean {
-  return REASONING_MODEL_RE.test(model);
-}
 import { prioritizeGitHubHits } from './referenceLearner';
 
 /** Resultado de la comprobación de conexión con el proveedor activo. */
@@ -664,7 +658,13 @@ export class OllamaClient {
     const cur = this.getConfiguredTaskModels();
 
     const chat = modelInstalled(installed, cur.chat ?? '') ? cur.chat! : picked.chat;
-    const completion = modelInstalled(installed, cur.completion ?? '') ? cur.completion! : picked.completion;
+    let completion = modelInstalled(installed, cur.completion ?? '') ? cur.completion! : picked.completion;
+    // Los modelos que razonan son nefastos para autocompletar (latencia y
+    // `<think>`). Migra selecciones antiguas que caían en `installed[0]`.
+    if (completion && isReasoningModel(completion) &&
+        picked.completion && !isReasoningModel(picked.completion)) {
+      completion = picked.completion;
+    }
     const agent = modelInstalled(installed, cur.agent ?? '') ? cur.agent! : picked.agent;
 
     if (chat !== cur.chat) {

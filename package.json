@@ -2,7 +2,7 @@
   "name": "local-copilot",
   "displayName": "Local Copilot — Ayudante de programación",
   "description": "Asistente de IA en VS Code con tres modos: Chat (ideas y sugerencias), Profesor (aprende el código) y Ayudante/agente (lee el proyecto, busca en internet, escribe archivos, ejecuta terminal y Ollama Build). Autocompletado local con Ollama.",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "publisher": "pilahito",
   "preview": false,
   "keywords": [

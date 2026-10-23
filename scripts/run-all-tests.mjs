@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scripts = [
+  'scripts/test-model-router.mjs',
   'scripts/test-v1038.mjs',
   'scripts/test-api-guidance.mjs',
   'scripts/test-reference-learner.mjs',
